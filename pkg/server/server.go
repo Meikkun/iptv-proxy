@@ -22,10 +22,12 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gin-contrib/cors"
@@ -187,12 +189,12 @@ func (c *Config) replaceURL(uri string, trackIndex int, xtream bool) (string, er
 		basicAuth += "@"
 	}
 
+	authority := advertisedAuthority(protocol, c.HostConfig.Hostname, c.AdvertisedPort)
 	newURI := fmt.Sprintf(
-		"%s://%s%s:%d%s%s",
+		"%s://%s%s%s%s",
 		protocol,
 		basicAuth,
-		c.HostConfig.Hostname,
-		c.AdvertisedPort,
+		authority,
 		customEnd,
 		uriPath,
 	)
@@ -203,4 +205,16 @@ func (c *Config) replaceURL(uri string, trackIndex int, xtream bool) (string, er
 	}
 
 	return newURL.String(), nil
+}
+
+func advertisedAuthority(protocol, hostname string, port int) string {
+	if shouldOmitAdvertisedPort(protocol, port) {
+		return hostname
+	}
+
+	return net.JoinHostPort(hostname, strconv.Itoa(port))
+}
+
+func shouldOmitAdvertisedPort(protocol string, port int) bool {
+	return (protocol == "https" && port == 443) || (protocol == "http" && port == 80)
 }
