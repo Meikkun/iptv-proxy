@@ -66,7 +66,7 @@ func (c *Config) m3u8ReverseProxy(ctx *gin.Context) {
 func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	utils.DebugLog("-> Incoming URL: %s", ctx.Request.URL) // Or use c.Request.URL.Path for exact request path
 
-	client := &http.Client{}
+	client := newUpstreamHTTPClient()
 
 	req, err := http.NewRequest("GET", oriURL.String(), nil)
 	if err != nil {

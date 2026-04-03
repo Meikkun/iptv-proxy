@@ -1,0 +1,5 @@
+#EXTM3U
+#EXTINF:-1 tvg-name="Alpha News" group-title="News",Alpha News
+http://source-a.example/live/news.ts
+#EXTINF:-1 tvg-name="Alpha Sports" group-title="Sports",Alpha Sports
+http://source-a.example/live/sports.ts

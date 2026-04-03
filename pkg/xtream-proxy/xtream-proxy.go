@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/config"
 	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/utils"
@@ -48,12 +49,16 @@ type Client struct {
 	*xtream.XtreamClient
 }
 
+const defaultXtreamRequestTimeout = 30 * time.Second
+
 // New new xtream client
 func New(user, password, baseURL, userAgent string) (*Client, error) {
 	cli, err := xtream.NewClientWithUserAgent(context.Background(), user, password, baseURL, userAgent)
 	if err != nil {
 		return nil, utils.PrintErrorAndReturn(err)
 	}
+
+	cli.HTTP = &http.Client{Timeout: defaultXtreamRequestTimeout}
 
 	return &Client{cli}, nil
 }
