@@ -45,6 +45,8 @@ type Config struct {
 
 	// M3U service part
 	playlist *m3u.Playlist
+	// unique group-title values discovered before filtering
+	availableGroups []string
 	// this variable is set only for m3u proxy endpoints
 	track *m3u.Track
 	// path to the proxyfied m3u file
@@ -55,13 +57,16 @@ type Config struct {
 
 // NewServer initialize a new server configuration
 func NewServer(config *config.ProxyConfig) (*Config, error) {
-	var p m3u.Playlist
-	if config.RemoteURL.String() != "" {
-		var err error
-		p, err = m3u.Parse(config.RemoteURL.String())
-		if err != nil {
-			return nil, err
-		}
+	p, err := loadPlaylistSources(config.M3USources)
+	if err != nil {
+		return nil, err
+	}
+
+	availableGroups := playlistGroups(p)
+
+	p, err = filterPlaylistByGroups(p, config.IncludeGroups)
+	if err != nil {
+		return nil, err
 	}
 
 	if trimmedCustomId := strings.Trim(config.CustomId, "/"); trimmedCustomId != "" {
@@ -71,6 +76,7 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 	return &Config{
 		config,
 		&p,
+		availableGroups,
 		nil,
 		defaultProxyfiedM3UPath,
 		endpointAntiColision,
@@ -92,6 +98,14 @@ func (c *Config) Serve() error {
 	log.Printf("[iptv-proxy] Server is ready and listening on :%d", c.HostConfig.Port)
 
 	return router.Run(fmt.Sprintf(":%d", c.HostConfig.Port))
+}
+
+// Groups returns the discovered M3U group-title values before filtering.
+func (c *Config) Groups() []string {
+	groups := make([]string, len(c.availableGroups))
+	copy(groups, c.availableGroups)
+
+	return groups
 }
 
 func (c *Config) playlistInitialization() error {

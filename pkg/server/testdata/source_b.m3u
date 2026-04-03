@@ -1,0 +1,5 @@
+#EXTM3U
+#EXTINF:-1 tvg-name="Beta Movies" group-title="Movies",Beta Movies
+http://source-b.example/live/movies.ts
+#EXTINF:-1 tvg-name="Beta Sports" group-title="Sports",Beta Sports
+http://source-b.example/live/sports.ts

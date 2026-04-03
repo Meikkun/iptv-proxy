@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -44,10 +45,14 @@ var rootCmd = &cobra.Command{
 
 		log.Printf("[iptv-proxy] Server is starting...")
 
-		m3uURL := viper.GetString("m3u-url")
-		remoteHostURL, err := url.Parse(m3uURL)
-		if err != nil {
-			log.Fatal(err)
+		m3uSources := resolveM3USources()
+		remoteHostURL := &url.URL{}
+		if len(m3uSources) == 1 {
+			var err error
+			remoteHostURL, err = url.Parse(m3uSources[0])
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 
 		xtreamUser := viper.GetString("xtream-user")
@@ -55,12 +60,16 @@ var rootCmd = &cobra.Command{
 		xtreamBaseURL := viper.GetString("xtream-base-url")
 
 		var username, password string
-		if strings.Contains(m3uURL, "/get.php") {
+		if len(m3uSources) == 1 && strings.Contains(m3uSources[0], "/get.php") {
 			username = remoteHostURL.Query().Get("username")
 			password = remoteHostURL.Query().Get("password")
 		}
 
-		if xtreamBaseURL == "" && xtreamPassword == "" && xtreamUser == "" {
+		if err := validateXtreamSourceConfig(m3uSources, xtreamUser, xtreamPassword, xtreamBaseURL); err != nil {
+			log.Fatal(err)
+		}
+
+		if len(m3uSources) == 1 && xtreamBaseURL == "" && xtreamPassword == "" && xtreamUser == "" {
 			if username != "" && password != "" {
 				log.Printf("[iptv-proxy] INFO: It's seams you are using an Xtream provider!")
 
@@ -80,6 +89,8 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		includeGroups := getStringSliceSetting("include-group")
+
 		conf := &config.ProxyConfig{
 			HostConfig: &config.HostConfiguration{
 				Hostname: viper.GetString("hostname"),
@@ -95,6 +106,9 @@ var rootCmd = &cobra.Command{
 			AdvertisedPort:       viper.GetInt("advertised-port"),
 			HTTPS:                viper.GetBool("https"),
 			M3UFileName:          viper.GetString("m3u-file-name"),
+			M3USources:           m3uSources,
+			IncludeGroups:        includeGroups,
+			ListGroups:           viper.GetBool("list-groups"),
 			CustomEndpoint:       viper.GetString("custom-endpoint"),
 			CustomId:             viper.GetString("custom-id"),
 			XtreamGenerateApiGet: viper.GetBool("xtream-api-get"),
@@ -107,6 +121,13 @@ var rootCmd = &cobra.Command{
 		server, err := server.NewServer(conf)
 		if err != nil {
 			log.Fatal(err)
+		}
+
+		if conf.ListGroups {
+			for _, group := range server.Groups() {
+				fmt.Println(group)
+			}
+			return
 		}
 
 		if e := server.Serve(); e != nil {
@@ -130,9 +151,12 @@ func init() {
 	// Here you will define your flags and configuration settings.
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "iptv-proxy-config", "C", "Config file (default is $HOME/.iptv-proxy.yaml)")
-	rootCmd.Flags().StringP("m3u-url", "u", "", `Iptv m3u file or url e.g: "http://example.com/iptv.m3u"`)
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "iptv-proxy-config", "C", "", "Config file (default is $HOME/.iptv-proxy.yaml)")
+	rootCmd.Flags().StringP("m3u-url", "u", "", `Legacy single-source M3U file or url e.g: "http://example.com/iptv.m3u"`)
+	rootCmd.Flags().StringSlice("m3u-source", nil, `Repeatable M3U source file or url`)
 	rootCmd.Flags().StringP("m3u-file-name", "", "iptv.m3u", `Name of the new proxified m3u file e.g "http://poxy.com/iptv.m3u"`)
+	rootCmd.Flags().StringSlice("include-group", nil, `Repeatable M3U group-title/category to keep in the merged output`)
+	rootCmd.Flags().Bool("list-groups", false, "List discovered M3U groups/categories and exit")
 	rootCmd.Flags().StringP("custom-endpoint", "", "", `Custom endpoint "http://poxy.com/<custom-endpoint>/iptv.m3u"`)
 	rootCmd.Flags().StringP("custom-id", "", "", `Custom anti-collison ID for each track "http://proxy.com/<custom-id>/..."`)
 	rootCmd.Flags().Int("port", 8080, "Iptv-proxy listening port")
@@ -179,4 +203,60 @@ func initConfig() {
 	if err := viper.ReadInConfig(); err == nil {
 		fmt.Println("Using config file:", viper.ConfigFileUsed())
 	}
+}
+
+func resolveM3USources() []string {
+	sources := getStringSliceSetting("m3u-source")
+	if len(sources) > 0 {
+		return sources
+	}
+
+	legacySource := strings.TrimSpace(viper.GetString("m3u-url"))
+	if legacySource == "" {
+		return nil
+	}
+
+	return []string{legacySource}
+}
+
+func getStringSliceSetting(key string) []string {
+	values := normalizeStringSlice(viper.GetStringSlice(key))
+	if len(values) > 0 {
+		return values
+	}
+
+	rawValue := strings.TrimSpace(viper.GetString(key))
+	if rawValue == "" {
+		return nil
+	}
+
+	return normalizeStringSlice([]string{rawValue})
+}
+
+func normalizeStringSlice(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, splitValue := range strings.Split(value, "|") {
+			trimmedValue := strings.TrimSpace(splitValue)
+			if trimmedValue == "" {
+				continue
+			}
+
+			normalized = append(normalized, trimmedValue)
+		}
+	}
+
+	return normalized
+}
+
+func validateXtreamSourceConfig(m3uSources []string, xtreamUser, xtreamPassword, xtreamBaseURL string) error {
+	if len(m3uSources) <= 1 {
+		return nil
+	}
+
+	if xtreamUser == "" && xtreamPassword == "" && xtreamBaseURL == "" {
+		return nil
+	}
+
+	return errors.New("xtream proxy mode supports a single M3U source only")
 }

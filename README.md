@@ -46,6 +46,8 @@ http://iptvexample.net:1234/15/test/4
 What M3U proxy IPTV do
  - convert chanels url to new endpoints
  - convert original m3u file with new routes pointing to the proxy
+ - can merge multiple M3U sources into a single output playlist
+ - can keep only selected `group-title` categories in the generated playlist
 
 Start proxy server example
 
@@ -73,6 +75,38 @@ http://proxyserver.com:8080/13/test/2?username=test&password=passwordtest
 http://proxyserver.com:8080/14/test/3?username=test&password=passwordtest
 #EXTINF:-1 tvg-ID="examplechanel4.com" tvg-name="chanel4" tvg-logo="http://ch.xyz/logo4.png" group-title="USA HD",CHANEL4-HD
 http://proxyserver.com:8080/15/test/4?username=test&password=passwordtest
+```
+
+### Multiple M3U sources and group filtering
+
+The proxy can merge multiple input playlists and preserve their original
+`group-title` values in the final output.
+
+Example:
+
+```Bash
+iptv-proxy --m3u-source http://provider-a.example/list.m3u \
+             --m3u-source http://provider-b.example/list.m3u \
+             --include-group Sports \
+             --include-group News \
+             --port 8080 \
+             --hostname proxyexample.com \
+             --user test \
+             --password passwordtest
+```
+
+Useful options:
+
+- `--m3u-source` repeatable M3U source input
+- `--m3u-url` legacy single-source option
+- `--include-group` repeatable `group-title` filter
+- `--list-groups` prints discovered groups/categories and exits
+
+Environment variables use `|` as a separator:
+
+```Shell
+M3U_SOURCE="http://provider-a.example/list.m3u|http://provider-b.example/list.m3u"
+INCLUDE_GROUP="Sports|News"
 ```
 
 ### M3u8 Example
@@ -155,14 +189,18 @@ Or
        # have to be the same as ENV variable PORT
       - 8080:8080
  environment:
-      # if you are using m3u remote file
+      # if you are using one or more remote files
+      # M3U_SOURCE: "http://example.com:1234/get.php?username=user&password=pass&type=m3u_plus&output=m3u8|http://example.net/backup.m3u"
+      # Legacy single-source option:
       # M3U_URL: http://example.com:1234/get.php?username=user&password=pass&type=m3u_plus&output=m3u8
-      M3U_URL: /root/iptv/iptv.m3u
+      M3U_SOURCE: /root/iptv/iptv.m3u
       # Port to expose the IPTVs endpoints
       PORT: 8080
       # Hostname or IP to expose the IPTVs endpoints (for machine not for docker)
       HOSTNAME: localhost
       GIN_MODE: release
+      # Optional group-title/category filter
+      # INCLUDE_GROUP: "Sports|News"
       ## Xtream-code proxy configuration
       ## (put these env variables if you want to add xtream proxy)
       XTREAM_USER: xtream_user
@@ -170,6 +208,10 @@ Or
       XTREAM_BASE_URL: "http://example.com:1234"
       USER: test
       PASSWORD: testpassword
+      # Optional debugging and response caching
+      # DEBUG_LOGGING: true
+      # CACHE_FOLDER: /root/iptv/cache/
+      # ERROR_DETAIL_LEVEL: simple
 ```
 
 ### Start
@@ -213,9 +255,9 @@ services:
       - "traefik.http.routers.iptv-proxy.tls.certresolver=mydnschallenge"
       - "traefik.http.services.iptv-proxy.loadbalancer.server.port=8080"
     environment:
-      # if you are using m3u remote file
-      # M3U_URL: https://example.com/iptvfile.m3u
-      M3U_URL: /root/iptv/iptv.m3u
+      # if you are using one or more remote files
+      # M3U_SOURCE: "https://example.com/iptvfile.m3u|https://example.net/backup.m3u"
+      M3U_SOURCE: /root/iptv/iptv.m3u
       # Iptv-Proxy listening port
       PORT: 8080
       # Port to expose for Xtream or m3u file tracks endpoint
@@ -232,6 +274,12 @@ services:
       #will be used for m3u and xtream auth proxy
       USER: test
       PASSWORD: testpassword
+      # Optional group-title/category filter
+      # INCLUDE_GROUP: "Sports|News"
+      # Optional debugging and response caching
+      # DEBUG_LOGGING: true
+      # CACHE_FOLDER: /root/iptv/cache/
+      # ERROR_DETAIL_LEVEL: simple
 
   traefik:
     restart: always
@@ -270,4 +318,3 @@ and auth with token...
 Grab me a beer 🍻
 
 [![paypal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate?hosted_button_id=WQAAMQWJPKHUN)
-
