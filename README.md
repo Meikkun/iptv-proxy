@@ -118,6 +118,14 @@ iptv-proxy --include-group 'Sports*' --include-group 'Movies ?D'
 
 Wildcard filters keep the original `group-title` values in the generated playlist.
 
+If a source group name contains a literal `|`, escape it as `\|` inside the
+filter value so it is not treated as a separator:
+
+```Shell
+INCLUDE_GROUP='ES\|*|\|ES\|*'
+iptv-proxy --include-group 'ES\|*' --include-group '\|ES\|*'
+```
+
 ### M3u8 Example
 
 The m3u8 feature is like m3u.
