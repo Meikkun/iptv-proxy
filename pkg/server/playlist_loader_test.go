@@ -4,11 +4,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/jamesnetherton/m3u"
 	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/config"
 )
 
@@ -70,6 +72,102 @@ func TestFilterPlaylistByGroups(t *testing.T) {
 	wantNames := []string{"Alpha Sports", "Beta Movies", "Beta Sports"}
 	if !reflect.DeepEqual(gotNames, wantNames) {
 		t.Fatalf("filtered track names = %v, want %v", gotNames, wantNames)
+	}
+}
+
+func TestFilterPlaylistByGroupsSupportsWildcardsAndKeepsOriginalGroups(t *testing.T) {
+	playlist := m3u.Playlist{
+		Tracks: []m3u.Track{
+			{
+				Name: "Sports ES One",
+				Tags: []m3u.Tag{{Name: groupTitleTagName, Value: "Sports ES"}},
+			},
+			{
+				Name: "Sports HD One",
+				Tags: []m3u.Tag{{Name: groupTitleTagName, Value: "Sports HD"}},
+			},
+			{
+				Name: "Sports US One",
+				Tags: []m3u.Tag{{Name: groupTitleTagName, Value: "Sports US"}},
+			},
+			{
+				Name: "News Local One",
+				Tags: []m3u.Tag{{Name: groupTitleTagName, Value: "News Local"}},
+			},
+		},
+	}
+
+	filtered, err := filterPlaylistByGroups(playlist, []string{"Sports*"})
+	if err != nil {
+		t.Fatalf("filterPlaylistByGroups() error = %v", err)
+	}
+
+	gotGroups := []string{
+		trackGroup(filtered.Tracks[0]),
+		trackGroup(filtered.Tracks[1]),
+		trackGroup(filtered.Tracks[2]),
+	}
+	wantGroups := []string{"Sports ES", "Sports HD", "Sports US"}
+	if !reflect.DeepEqual(gotGroups, wantGroups) {
+		t.Fatalf("filtered groups = %v, want %v", gotGroups, wantGroups)
+	}
+}
+
+func TestMarshallIntoPreservesOriginalGroupTitlesAfterWildcardFiltering(t *testing.T) {
+	cfg := &config.ProxyConfig{
+		HostConfig: &config.HostConfiguration{
+			Hostname: "localhost",
+			Port:     8080,
+		},
+		User:           config.CredentialString("user"),
+		Password:       config.CredentialString("pass"),
+		AdvertisedPort: 8080,
+	}
+
+	server := &Config{
+		ProxyConfig: cfg,
+		playlist: &m3u.Playlist{
+			Tracks: []m3u.Track{
+				{
+					Name:   "Sports ES One",
+					Length: -1,
+					URI:    "http://provider.example/one.ts",
+					Tags:   []m3u.Tag{{Name: groupTitleTagName, Value: "Sports ES"}},
+				},
+				{
+					Name:   "Sports HD One",
+					Length: -1,
+					URI:    "http://provider.example/two.ts",
+					Tags:   []m3u.Tag{{Name: groupTitleTagName, Value: "Sports HD"}},
+				},
+			},
+		},
+		endpointAntiColision: "stable",
+	}
+
+	tmpFile, err := os.CreateTemp("", "iptv-proxy-marshall-*.m3u")
+	if err != nil {
+		t.Fatalf("os.CreateTemp() error = %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if err := server.marshallInto(tmpFile, false); err != nil {
+		t.Fatalf("marshallInto() error = %v", err)
+	}
+
+	content, err := os.ReadFile(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+
+	gotContent := string(content)
+	if !strings.Contains(gotContent, `group-title="Sports ES"`) {
+		t.Fatalf("output missing original group title Sports ES: %s", gotContent)
+	}
+
+	if !strings.Contains(gotContent, `group-title="Sports HD"`) {
+		t.Fatalf("output missing original group title Sports HD: %s", gotContent)
 	}
 }
 
