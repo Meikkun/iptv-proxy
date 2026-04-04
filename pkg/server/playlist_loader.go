@@ -191,7 +191,7 @@ func resolveTrackURI(baseURL *url.URL, rawURI string) (string, error) {
 }
 
 func filterPlaylistByGroups(playlist m3u.Playlist, includeGroups []string) (m3u.Playlist, error) {
-	requestedGroups := normalizeGroupSelection(includeGroups)
+	requestedGroups := normalizeGroups(includeGroups)
 	if len(requestedGroups) == 0 {
 		return playlist, nil
 	}
@@ -201,7 +201,7 @@ func filterPlaylistByGroups(playlist m3u.Playlist, includeGroups []string) (m3u.
 	}
 
 	for _, track := range playlist.Tracks {
-		if _, ok := requestedGroups[trackGroup(track)]; ok {
+		if groupMatchesAnyPattern(trackGroup(track), requestedGroups) {
 			filtered.Tracks = append(filtered.Tracks, track)
 		}
 	}
@@ -209,7 +209,7 @@ func filterPlaylistByGroups(playlist m3u.Playlist, includeGroups []string) (m3u.
 	if len(playlist.Tracks) > 0 && len(filtered.Tracks) == 0 {
 		return m3u.Playlist{}, fmt.Errorf(
 			"no tracks matched the requested groups %q (available groups: %s)",
-			strings.Join(normalizeGroups(includeGroups), ", "),
+			strings.Join(requestedGroups, ", "),
 			strings.Join(playlistGroups(playlist), ", "),
 		)
 	}
@@ -241,15 +241,6 @@ func trackGroup(track m3u.Track) string {
 	return ""
 }
 
-func normalizeGroupSelection(groups []string) map[string]struct{} {
-	normalized := make(map[string]struct{})
-	for _, group := range normalizeGroups(groups) {
-		normalized[group] = struct{}{}
-	}
-
-	return normalized
-}
-
 func normalizeGroups(groups []string) []string {
 	normalized := make([]string, 0, len(groups))
 	for _, group := range groups {
@@ -262,6 +253,58 @@ func normalizeGroups(groups []string) []string {
 	}
 
 	return normalized
+}
+
+func groupMatchesAnyPattern(group string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if groupMatchesPattern(group, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func groupMatchesPattern(group, pattern string) bool {
+	if !strings.ContainsAny(pattern, "*?") {
+		return group == pattern
+	}
+
+	return wildcardMatch(group, pattern)
+}
+
+func wildcardMatch(value, pattern string) bool {
+	valueRunes := []rune(value)
+	patternRunes := []rune(pattern)
+
+	valueIndex := 0
+	patternIndex := 0
+	starIndex := -1
+	matchIndex := 0
+
+	for valueIndex < len(valueRunes) {
+		switch {
+		case patternIndex < len(patternRunes) && (patternRunes[patternIndex] == valueRunes[valueIndex] || patternRunes[patternIndex] == '?'):
+			valueIndex++
+			patternIndex++
+		case patternIndex < len(patternRunes) && patternRunes[patternIndex] == '*':
+			starIndex = patternIndex
+			matchIndex = valueIndex
+			patternIndex++
+		case starIndex != -1:
+			patternIndex = starIndex + 1
+			matchIndex++
+			valueIndex = matchIndex
+		default:
+			return false
+		}
+	}
+
+	for patternIndex < len(patternRunes) && patternRunes[patternIndex] == '*' {
+		patternIndex++
+	}
+
+	return patternIndex == len(patternRunes)
 }
 
 func sortUniqueKeys(values map[string]struct{}) []string {

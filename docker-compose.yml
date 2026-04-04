@@ -33,6 +33,7 @@ services:
       GIN_MODE: release
       # Optional group-title/category filter for the merged output
       # INCLUDE_GROUP: "Sports|News"
+      # INCLUDE_GROUP: "Sports*|News*"
       ## Xtream-code proxy configuration
       XTREAM_USER: xtream_user
       XTREAM_PASSWORD: xtream_password

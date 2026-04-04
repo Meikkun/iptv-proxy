@@ -99,7 +99,7 @@ Useful options:
 
 - `--m3u-source` repeatable M3U source input
 - `--m3u-url` legacy single-source option
-- `--include-group` repeatable `group-title` filter
+- `--include-group` repeatable `group-title` filter, supporting exact matches and `*`/`?` wildcards
 - `--list-groups` prints discovered groups/categories and exits
 
 Environment variables use `|` as a separator:
@@ -108,6 +108,15 @@ Environment variables use `|` as a separator:
 M3U_SOURCE="http://provider-a.example/list.m3u|http://provider-b.example/list.m3u"
 INCLUDE_GROUP="Sports|News"
 ```
+
+Wildcard examples:
+
+```Shell
+INCLUDE_GROUP='Sports*|News*'
+iptv-proxy --include-group 'Sports*' --include-group 'Movies ?D'
+```
+
+Wildcard filters keep the original `group-title` values in the generated playlist.
 
 ### M3u8 Example
 
