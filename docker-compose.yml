@@ -34,6 +34,7 @@ services:
       # Optional group-title/category filter for the merged output
       # INCLUDE_GROUP: "Sports|News"
       # INCLUDE_GROUP: "Sports*|News*"
+      # INCLUDE_GROUP: 'ES\|*|\|ES\|*'
       ## Xtream-code proxy configuration
       XTREAM_USER: xtream_user
       XTREAM_PASSWORD: xtream_password

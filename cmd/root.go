@@ -236,7 +236,7 @@ func getStringSliceSetting(key string) []string {
 func normalizeStringSlice(values []string) []string {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
-		for _, splitValue := range strings.Split(value, "|") {
+		for _, splitValue := range splitPipeSeparatedValue(value) {
 			trimmedValue := strings.TrimSpace(splitValue)
 			if trimmedValue == "" {
 				continue
@@ -247,6 +247,41 @@ func normalizeStringSlice(values []string) []string {
 	}
 
 	return normalized
+}
+
+func splitPipeSeparatedValue(value string) []string {
+	splitValues := make([]string, 0, 1)
+	var current strings.Builder
+	escaped := false
+
+	for _, r := range value {
+		if escaped {
+			if r != '|' && r != '\\' {
+				current.WriteRune('\\')
+			}
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+
+		switch r {
+		case '\\':
+			escaped = true
+		case '|':
+			splitValues = append(splitValues, current.String())
+			current.Reset()
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if escaped {
+		current.WriteRune('\\')
+	}
+
+	splitValues = append(splitValues, current.String())
+
+	return splitValues
 }
 
 func validateXtreamSourceConfig(m3uSources []string, xtreamUser, xtreamPassword, xtreamBaseURL string) error {
