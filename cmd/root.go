@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/config"
 
@@ -112,6 +113,13 @@ var rootCmd = &cobra.Command{
 			CustomEndpoint:       viper.GetString("custom-endpoint"),
 			CustomId:             viper.GetString("custom-id"),
 			XtreamGenerateApiGet: viper.GetBool("xtream-api-get"),
+			RelayEnabled:         viper.GetBool("relay-enabled"),
+			RelayBufferDuration:  viper.GetDuration("relay-buffer-duration"),
+			RelayTargetDelay:     viper.GetDuration("relay-target-delay"),
+			RelayIdleTimeout:     viper.GetDuration("relay-idle-timeout"),
+			RelayReconnectDelay:  viper.GetDuration("relay-reconnect-delay"),
+			RelayReconnectMax:    viper.GetDuration("relay-reconnect-max"),
+			RelayMaxBufferBytes:  viper.GetInt("relay-max-buffer-bytes"),
 		}
 
 		if conf.AdvertisedPort == 0 {
@@ -170,6 +178,13 @@ func init() {
 	rootCmd.Flags().String("xtream-base-url", "", "Xtream-code base url e.g(http://expample.tv:8080)")
 	rootCmd.Flags().Int("m3u-cache-expiration", 1, "M3U cache expiration in hour")
 	rootCmd.Flags().BoolP("xtream-api-get", "", false, "Generate get.php from xtream API instead of get.php original endpoint")
+	rootCmd.Flags().Bool("relay-enabled", true, "Enable shared buffered relay for eligible non-HLS live TS streams")
+	rootCmd.Flags().Duration("relay-buffer-duration", 10*time.Second, "Buffered relay retention window for eligible live streams")
+	rootCmd.Flags().Duration("relay-target-delay", 4*time.Second, "Target playback delay behind the live edge for buffered relay")
+	rootCmd.Flags().Duration("relay-idle-timeout", 30*time.Second, "How long an idle relay session stays alive after the last viewer disconnects")
+	rootCmd.Flags().Duration("relay-reconnect-delay", 250*time.Millisecond, "Initial reconnect backoff for buffered relay sessions")
+	rootCmd.Flags().Duration("relay-reconnect-max", 5*time.Second, "Maximum reconnect backoff for buffered relay sessions")
+	rootCmd.Flags().Int("relay-max-buffer-bytes", 32*1024*1024, "Maximum in-memory relay buffer size per active channel")
 
 	if e := viper.BindPFlags(rootCmd.Flags()); e != nil {
 		log.Fatal("error binding PFlags to viper")

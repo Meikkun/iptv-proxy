@@ -45,6 +45,14 @@ services:
       PASSWORD: testpassword
       # ---- Additional debugging options ----
       #DEBUG_LOGGING: true
+      # Shared buffered relay for eligible non-HLS TS live streams
+      #RELAY_ENABLED: true
+      #RELAY_BUFFER_DURATION: 10s
+      #RELAY_TARGET_DELAY: 4s
+      #RELAY_IDLE_TIMEOUT: 30s
+      #RELAY_RECONNECT_DELAY: 250ms
+      #RELAY_RECONNECT_MAX: 5s
+      #RELAY_MAX_BUFFER_BYTES: 33554432
       # Save the IPTV Provider responses to this location
       #CACHE_FOLDER: /root/iptv/cache/
       # Default to using Advanced parsing. Disable it with:

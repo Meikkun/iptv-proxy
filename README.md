@@ -126,6 +126,37 @@ INCLUDE_GROUP='ES\|*|\|ES\|*'
 iptv-proxy --include-group 'ES\|*' --include-group '\|ES\|*'
 ```
 
+### Buffered Relay For Live TS Streams
+
+The proxy can share one upstream connection per active non-HLS TS channel,
+keep a short in-memory buffer, and reconnect in the background when the source
+briefly drops.
+
+Default relay settings:
+
+- `--relay-enabled=true`
+- `--relay-buffer-duration=10s`
+- `--relay-target-delay=4s`
+- `--relay-idle-timeout=30s`
+- `--relay-reconnect-delay=250ms`
+- `--relay-reconnect-max=5s`
+- `--relay-max-buffer-bytes=33554432`
+
+Environment variable example:
+
+```Shell
+RELAY_ENABLED=true
+RELAY_BUFFER_DURATION=10s
+RELAY_TARGET_DELAY=4s
+RELAY_IDLE_TIMEOUT=30s
+RELAY_RECONNECT_DELAY=250ms
+RELAY_RECONNECT_MAX=5s
+RELAY_MAX_BUFFER_BYTES=33554432
+```
+
+Relay currently applies only to eligible non-HLS TS-style live streams.
+HLS / `.m3u8` requests continue to use the direct proxy path.
+
 ### M3u8 Example
 
 The m3u8 feature is like m3u.

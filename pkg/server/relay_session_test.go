@@ -1,0 +1,218 @@
+package server
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jamesnetherton/m3u"
+)
+
+func TestRelaySessionSharesSingleUpstreamWithMultipleSubscribers(t *testing.T) {
+	manager := &RelayManager{
+		bufferDuration: 10 * time.Second,
+		targetDelay:    0,
+		idleTimeout:    time.Second,
+		reconnectDelay: 10 * time.Millisecond,
+		reconnectMax:   10 * time.Millisecond,
+		maxBufferBytes: 1024,
+		sessions:       make(map[string]*RelaySession),
+	}
+
+	var (
+		callCount int
+		writePipe *io.PipeWriter
+		readyCh   = make(chan struct{})
+	)
+
+	opener := func(ctx context.Context) (*relayUpstreamResponse, error) {
+		callCount++
+		if callCount > 1 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+
+		reader, writer := io.Pipe()
+		writePipe = writer
+		close(readyCh)
+
+		return &relayUpstreamResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"video/mp2t"}},
+			Body:       reader,
+		}, nil
+	}
+
+	session := newRelaySession(manager, "channel", opener)
+	go session.run()
+	defer session.close()
+
+	<-readyCh
+	if _, err := writePipe.Write([]byte("shared-stream")); err != nil {
+		t.Fatalf("writePipe.Write() error = %v", err)
+	}
+
+	startOne, err := session.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("session.Subscribe() error = %v", err)
+	}
+	defer startOne.Subscription.Close()
+
+	startTwo, err := session.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("session.Subscribe() error = %v", err)
+	}
+	defer startTwo.Subscription.Close()
+
+	chunkOne, err := startOne.Subscription.NextChunk(context.Background())
+	if err != nil {
+		t.Fatalf("startOne.Subscription.NextChunk() error = %v", err)
+	}
+
+	chunkTwo, err := startTwo.Subscription.NextChunk(context.Background())
+	if err != nil {
+		t.Fatalf("startTwo.Subscription.NextChunk() error = %v", err)
+	}
+
+	if string(chunkOne) != "shared-stream" || string(chunkTwo) != "shared-stream" {
+		t.Fatalf("chunks = %q, %q, want shared-stream", string(chunkOne), string(chunkTwo))
+	}
+
+	if callCount != 1 {
+		t.Fatalf("opener call count = %d, want 1", callCount)
+	}
+
+	_ = writePipe.Close()
+}
+
+func TestRelaySessionReconnectsAndContinuesStreaming(t *testing.T) {
+	manager := &RelayManager{
+		bufferDuration: 10 * time.Second,
+		targetDelay:    0,
+		idleTimeout:    time.Second,
+		reconnectDelay: 10 * time.Millisecond,
+		reconnectMax:   10 * time.Millisecond,
+		maxBufferBytes: 1024,
+		sessions:       make(map[string]*RelaySession),
+	}
+
+	var (
+		mu       sync.Mutex
+		call     int
+		payloads = []string{"first", "second"}
+	)
+
+	opener := func(ctx context.Context) (*relayUpstreamResponse, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if call >= len(payloads) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+
+		payload := payloads[call]
+		call++
+		return &relayUpstreamResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"video/mp2t"}},
+			Body:       io.NopCloser(strings.NewReader(payload)),
+		}, nil
+	}
+
+	session := newRelaySession(manager, "channel", opener)
+	go session.run()
+	defer session.close()
+
+	start, err := session.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("session.Subscribe() error = %v", err)
+	}
+	defer start.Subscription.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	first, err := start.Subscription.NextChunk(ctx)
+	if err != nil {
+		t.Fatalf("NextChunk() error = %v", err)
+	}
+
+	second, err := start.Subscription.NextChunk(ctx)
+	if err != nil {
+		t.Fatalf("NextChunk() error = %v", err)
+	}
+
+	if string(first) != "first" || string(second) != "second" {
+		t.Fatalf("chunks = %q, %q, want first then second", string(first), string(second))
+	}
+}
+
+func TestRelaySessionIdleTimeoutClosesSession(t *testing.T) {
+	manager := &RelayManager{
+		bufferDuration: 10 * time.Second,
+		targetDelay:    0,
+		idleTimeout:    20 * time.Millisecond,
+		reconnectDelay: 10 * time.Millisecond,
+		reconnectMax:   10 * time.Millisecond,
+		maxBufferBytes: 1024,
+		sessions:       make(map[string]*RelaySession),
+	}
+
+	reader, writer := io.Pipe()
+	session := newRelaySession(manager, "idle-channel", func(ctx context.Context) (*relayUpstreamResponse, error) {
+		return &relayUpstreamResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"video/mp2t"}},
+			Body:       reader,
+		}, nil
+	})
+	manager.sessions[session.key] = session
+	go session.run()
+	defer writer.Close()
+
+	if _, err := writer.Write([]byte("warmup")); err != nil {
+		t.Fatalf("writer.Write() error = %v", err)
+	}
+
+	start, err := session.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("session.Subscribe() error = %v", err)
+	}
+
+	start.Subscription.Close()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		manager.mu.Lock()
+		_, ok := manager.sessions[session.key]
+		manager.mu.Unlock()
+		if !ok {
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("relay session was not removed after idle timeout")
+}
+
+func TestIsRelayEligibleTrack(t *testing.T) {
+	track := &m3u.Track{URI: "http://provider.example/live/channel.ts"}
+	if !isRelayEligibleTrack(track, http.Header{}) {
+		t.Fatal("isRelayEligibleTrack() = false, want true")
+	}
+
+	hlsTrack := &m3u.Track{URI: "http://provider.example/live/channel.m3u8"}
+	if isRelayEligibleTrack(hlsTrack, http.Header{}) {
+		t.Fatal("isRelayEligibleTrack() = true for HLS, want false")
+	}
+
+	if isRelayEligibleTrack(track, http.Header{"Range": []string{"bytes=0-10"}}) {
+		t.Fatal("isRelayEligibleTrack() = true with Range header, want false")
+	}
+}

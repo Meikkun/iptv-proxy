@@ -20,6 +20,7 @@ package config
 
 import (
 	"net/url"
+	"time"
 )
 
 // Add Debugging Logging option
@@ -64,5 +65,12 @@ type ProxyConfig struct {
 	RemoteURL            *url.URL
 	AdvertisedPort       int
 	HTTPS                bool
+	RelayEnabled         bool
+	RelayBufferDuration  time.Duration
+	RelayTargetDelay     time.Duration
+	RelayIdleTimeout     time.Duration
+	RelayReconnectDelay  time.Duration
+	RelayReconnectMax    time.Duration
+	RelayMaxBufferBytes  int
 	User, Password       CredentialString
 }

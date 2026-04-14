@@ -45,6 +45,8 @@ var endpointAntiColision = strings.Split(uuid.NewV4().String(), "-")[0]
 type Config struct {
 	*config.ProxyConfig
 
+	relayManager *RelayManager
+
 	// M3U service part
 	playlist *m3u.Playlist
 	// unique group-title values discovered before filtering
@@ -75,13 +77,19 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 		endpointAntiColision = trimmedCustomId
 	}
 
+	var relayManager *RelayManager
+	if config.RelayEnabled {
+		relayManager = NewRelayManager(config)
+	}
+
 	return &Config{
-		config,
-		&p,
-		availableGroups,
-		nil,
-		defaultProxyfiedM3UPath,
-		endpointAntiColision,
+		ProxyConfig:          config,
+		relayManager:         relayManager,
+		playlist:             &p,
+		availableGroups:      availableGroups,
+		track:                nil,
+		proxyfiedM3UPath:     defaultProxyfiedM3UPath,
+		endpointAntiColision: endpointAntiColision,
 	}, nil
 }
 

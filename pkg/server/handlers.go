@@ -20,6 +20,8 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -45,6 +47,11 @@ func (c *Config) reverseProxy(ctx *gin.Context) {
 	rpURL, err := url.Parse(c.track.URI)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
+		return
+	}
+
+	if c.shouldUseRelay(ctx) {
+		c.relayStream(ctx, rpURL)
 		return
 	}
 
@@ -89,6 +96,52 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 		io.Copy(w, resp.Body) // nolint: errcheck
 		return false
 	})
+}
+
+func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
+	if c.relayManager == nil {
+		c.stream(ctx, oriURL)
+		return
+	}
+
+	session := c.relayManager.GetOrCreate(oriURL, ctx.Request.Header)
+	start, err := session.Subscribe(ctx.Request.Context())
+	if err != nil {
+		ctx.AbortWithError(http.StatusBadGateway, err) // nolint: errcheck
+		return
+	}
+	defer start.Subscription.Close()
+
+	mergeHttpHeader(ctx.Writer.Header(), start.Header)
+	ctx.Status(start.StatusCode)
+
+	flusher, _ := ctx.Writer.(http.Flusher)
+	for {
+		chunk, err := start.Subscription.NextChunk(ctx.Request.Context())
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+
+			return
+		}
+
+		if len(chunk) == 0 {
+			continue
+		}
+
+		if _, err := ctx.Writer.Write(chunk); err != nil {
+			return
+		}
+
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
+func (c *Config) shouldUseRelay(ctx *gin.Context) bool {
+	return c.relayManager != nil && isRelayEligibleTrack(c.track, ctx.Request.Header)
 }
 
 func (c *Config) xtreamStream(ctx *gin.Context, oriURL *url.URL) {
