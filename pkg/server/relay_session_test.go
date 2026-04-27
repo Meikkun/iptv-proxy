@@ -47,7 +47,7 @@ func TestRelaySessionSharesSingleUpstreamWithMultipleSubscribers(t *testing.T) {
 		}, nil
 	}
 
-	session := newRelaySession(manager, "channel", opener)
+	session := newRelaySession(manager, "channel", "session-a", "channel", "provider.example", opener)
 	go session.run()
 	defer session.close()
 
@@ -124,7 +124,7 @@ func TestRelaySessionReconnectsAndContinuesStreaming(t *testing.T) {
 		}, nil
 	}
 
-	session := newRelaySession(manager, "channel", opener)
+	session := newRelaySession(manager, "channel", "session-b", "channel", "provider.example", opener)
 	go session.run()
 	defer session.close()
 
@@ -164,7 +164,7 @@ func TestRelaySessionIdleTimeoutClosesSession(t *testing.T) {
 	}
 
 	reader, writer := io.Pipe()
-	session := newRelaySession(manager, "idle-channel", func(ctx context.Context) (*relayUpstreamResponse, error) {
+	session := newRelaySession(manager, "idle-channel", "session-c", "idle-channel", "provider.example", func(ctx context.Context) (*relayUpstreamResponse, error) {
 		return &relayUpstreamResponse{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"video/mp2t"}},

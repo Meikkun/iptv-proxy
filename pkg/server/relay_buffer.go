@@ -61,6 +61,10 @@ func (b *relayBuffer) hasData() bool {
 	return len(b.chunks) > 0
 }
 
+func (b *relayBuffer) bytes() int {
+	return b.totalBytes
+}
+
 func (b *relayBuffer) coverage() time.Duration {
 	if len(b.chunks) < 2 {
 		return 0

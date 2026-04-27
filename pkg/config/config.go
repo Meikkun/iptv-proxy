@@ -72,5 +72,7 @@ type ProxyConfig struct {
 	RelayReconnectDelay  time.Duration
 	RelayReconnectMax    time.Duration
 	RelayMaxBufferBytes  int
+	RelayLogSummaryEvery time.Duration
+	RelayLogVerbose      bool
 	User, Password       CredentialString
 }

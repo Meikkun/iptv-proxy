@@ -120,6 +120,8 @@ var rootCmd = &cobra.Command{
 			RelayReconnectDelay:  viper.GetDuration("relay-reconnect-delay"),
 			RelayReconnectMax:    viper.GetDuration("relay-reconnect-max"),
 			RelayMaxBufferBytes:  viper.GetInt("relay-max-buffer-bytes"),
+			RelayLogSummaryEvery: viper.GetDuration("relay-log-summary-interval"),
+			RelayLogVerbose:      viper.GetBool("relay-log-verbose"),
 		}
 
 		if conf.AdvertisedPort == 0 {
@@ -185,6 +187,8 @@ func init() {
 	rootCmd.Flags().Duration("relay-reconnect-delay", 250*time.Millisecond, "Initial reconnect backoff for buffered relay sessions")
 	rootCmd.Flags().Duration("relay-reconnect-max", 5*time.Second, "Maximum reconnect backoff for buffered relay sessions")
 	rootCmd.Flags().Int("relay-max-buffer-bytes", 32*1024*1024, "Maximum in-memory relay buffer size per active channel")
+	rootCmd.Flags().Duration("relay-log-summary-interval", time.Minute, "Interval for buffered relay summary logs (0 disables periodic summary)")
+	rootCmd.Flags().Bool("relay-log-verbose", false, "Enable verbose per-request buffered relay logs")
 
 	if e := viper.BindPFlags(rootCmd.Flags()); e != nil {
 		log.Fatal("error binding PFlags to viper")

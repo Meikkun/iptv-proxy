@@ -141,6 +141,8 @@ Default relay settings:
 - `--relay-reconnect-delay=250ms`
 - `--relay-reconnect-max=5s`
 - `--relay-max-buffer-bytes=33554432`
+- `--relay-log-summary-interval=1m`
+- `--relay-log-verbose=false`
 
 Environment variable example:
 
@@ -152,10 +154,19 @@ RELAY_IDLE_TIMEOUT=30s
 RELAY_RECONNECT_DELAY=250ms
 RELAY_RECONNECT_MAX=5s
 RELAY_MAX_BUFFER_BYTES=33554432
+RELAY_LOG_SUMMARY_INTERVAL=1m
+RELAY_LOG_VERBOSE=false
 ```
 
 Relay currently applies only to eligible non-HLS TS-style live streams.
 HLS / `.m3u8` requests continue to use the direct proxy path.
+
+Relay logs are emitted to stdout/stderr (Docker logs). Useful markers:
+
+- `session_created` when a new shared relay starts
+- `subscriber_joined subs=2` when multiple clients share one upstream stream
+- `reconnect` / `reconnect_recovered` during upstream blips
+- `summary` at `RELAY_LOG_SUMMARY_INTERVAL` with bypass counters and active session totals
 
 ### M3u8 Example
 

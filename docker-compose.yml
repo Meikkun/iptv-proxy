@@ -53,6 +53,8 @@ services:
       #RELAY_RECONNECT_DELAY: 250ms
       #RELAY_RECONNECT_MAX: 5s
       #RELAY_MAX_BUFFER_BYTES: 33554432
+      #RELAY_LOG_SUMMARY_INTERVAL: 1m
+      #RELAY_LOG_VERBOSE: false
       # Save the IPTV Provider responses to this location
       #CACHE_FOLDER: /root/iptv/cache/
       # Default to using Advanced parsing. Disable it with:

@@ -34,6 +34,10 @@ func TestRelayBufferTrimsByMaxBytes(t *testing.T) {
 		t.Fatal("buffer.hasData() = false, want true")
 	}
 
+	if got := buffer.bytes(); got != 3 {
+		t.Fatalf("buffer.bytes() = %d, want 3", got)
+	}
+
 	chunk, ok := buffer.chunkAtOrAfter(1)
 	if !ok {
 		t.Fatal("buffer.chunkAtOrAfter() = false, want true")

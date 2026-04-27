@@ -20,6 +20,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -97,6 +98,10 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 func (c *Config) Serve() error {
 	if err := c.playlistInitialization(); err != nil {
 		return err
+	}
+
+	if c.relayManager != nil {
+		c.relayManager.StartSummaryLogging(context.Background())
 	}
 
 	router := gin.Default()

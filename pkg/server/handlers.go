@@ -50,9 +50,11 @@ func (c *Config) reverseProxy(ctx *gin.Context) {
 		return
 	}
 
-	if c.shouldUseRelay(ctx) {
+	if useRelay, bypassReason := c.shouldUseRelay(ctx); useRelay {
 		c.relayStream(ctx, rpURL)
 		return
+	} else if c.relayManager != nil {
+		c.relayManager.RecordBypass(bypassReason, c.track, ctx.Request.Header)
 	}
 
 	c.stream(ctx, rpURL)
@@ -104,7 +106,7 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 		return
 	}
 
-	session := c.relayManager.GetOrCreate(oriURL, ctx.Request.Header)
+	session := c.relayManager.GetOrCreate(oriURL, ctx.Request.Header, c.track)
 	start, err := session.Subscribe(ctx.Request.Context())
 	if err != nil {
 		ctx.AbortWithError(http.StatusBadGateway, err) // nolint: errcheck
@@ -140,8 +142,12 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 	}
 }
 
-func (c *Config) shouldUseRelay(ctx *gin.Context) bool {
-	return c.relayManager != nil && isRelayEligibleTrack(c.track, ctx.Request.Header)
+func (c *Config) shouldUseRelay(ctx *gin.Context) (bool, relayBypassReason) {
+	if c.relayManager == nil {
+		return false, relayBypassNone
+	}
+
+	return relayEligibility(c.track, ctx.Request.Header)
 }
 
 func (c *Config) xtreamStream(ctx *gin.Context, oriURL *url.URL) {
