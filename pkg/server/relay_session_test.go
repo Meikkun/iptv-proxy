@@ -207,6 +207,9 @@ func TestIsRelayEligibleTrack(t *testing.T) {
 	if !isRelayEligibleTrack(track, http.Header{}) {
 		t.Fatal("isRelayEligibleTrack() = false, want true")
 	}
+	if !isRelayEligibleTrack(track, http.Header{"Range": []string{"bytes=0-"}}) {
+		t.Fatal("isRelayEligibleTrack() = false with bytes=0-, want true")
+	}
 
 	hlsTrack := &m3u.Track{URI: "http://provider.example/live/channel.m3u8"}
 	if isRelayEligibleTrack(hlsTrack, http.Header{}) {

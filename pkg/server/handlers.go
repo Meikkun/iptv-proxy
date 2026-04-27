@@ -114,13 +114,14 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 		return
 	}
 	defer start.Subscription.Close()
+	rangeMode := relayRequestRangeMode(ctx.Request.Header)
 	c.relayManager.logf(
-		"request relay session=%s channel=%q client=%s path=%q range_present=%t",
+		"request relay session=%s channel=%q client=%s path=%q range_mode=%s",
 		session.id,
 		session.channel,
 		ctx.ClientIP(),
 		ctx.Request.URL.Path,
-		ctx.Request.Header.Get("Range") != "",
+		rangeMode,
 	)
 
 	relayHeader := sanitizeRelayResponseHeader(start.Header)

@@ -34,6 +34,8 @@ type relaySourceOpener func(ctx context.Context) (*relayUpstreamResponse, error)
 
 type relayBypassReason string
 
+type relayRangeMode string
+
 const (
 	relayBypassNone          relayBypassReason = ""
 	relayBypassNoTrack       relayBypassReason = "no_track"
@@ -41,6 +43,10 @@ const (
 	relayBypassHLS           relayBypassReason = "hls"
 	relayBypassIneligibleExt relayBypassReason = "ineligible_ext"
 	relayBypassVOD           relayBypassReason = "vod"
+
+	relayRangeModeNone          relayRangeMode = "none"
+	relayRangeModeOpenEndedZero relayRangeMode = "open_ended_zero"
+	relayRangeModeOther         relayRangeMode = "other"
 )
 
 type relayCounters struct {
@@ -452,12 +458,30 @@ func cloneHTTPHeader(header http.Header) http.Header {
 	return header.Clone()
 }
 
+func relayRequestRangeMode(requestHeader http.Header) relayRangeMode {
+	rawValue := strings.TrimSpace(requestHeader.Get("Range"))
+	if rawValue == "" {
+		return relayRangeModeNone
+	}
+
+	normalized := strings.ToLower(rawValue)
+	if strings.Contains(normalized, ",") {
+		return relayRangeModeOther
+	}
+
+	if normalized == "bytes=0-" {
+		return relayRangeModeOpenEndedZero
+	}
+
+	return relayRangeModeOther
+}
+
 func relayEligibility(track *m3u.Track, requestHeader http.Header) (bool, relayBypassReason) {
 	if track == nil {
 		return false, relayBypassNoTrack
 	}
 
-	if requestHeader.Get("Range") != "" {
+	if relayRequestRangeMode(requestHeader) == relayRangeModeOther {
 		return false, relayBypassRange
 	}
 
