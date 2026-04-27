@@ -67,8 +67,6 @@ type ProxyConfig struct {
 	HTTPS                bool
 	RelayEnabled         bool
 	RelayBufferDuration  time.Duration
-	// RelayTargetDelay is the initial join offset for new subscribers,
-	// not a continuously maintained playback delay.
 	RelayTargetDelay     time.Duration
 	RelayIdleTimeout     time.Duration
 	RelayReconnectDelay  time.Duration

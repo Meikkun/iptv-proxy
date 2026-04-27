@@ -161,7 +161,7 @@ RELAY_LOG_VERBOSE=false
 Relay currently applies only to eligible non-HLS TS-style live streams.
 HLS / `.m3u8` requests, range requests, and VOD-like tracks (positive `EXTINF` duration) continue to use the direct proxy path.
 
-**How the buffer works:** `relay-target-delay` sets the initial join offset for new subscribers, not a continuously maintained playback delay. A subscriber starts roughly that far behind the live edge, then catches up as new chunks arrive. If the upstream briefly drops, the proxy plays from the retained buffer and the effective delay shrinks toward live. Once the upstream reconnects, buffering resumes.
+**How the buffer works:** `relay-target-delay` is the target playback delay behind the live edge. The relay waits until it has enough retained coverage for new subscribers, then releases chunks on that delay so an active viewer can keep playing from buffered data during short upstream interruptions. If the configured delay cannot be fully reached before the startup timeout, the relay falls back to the best available partial delay and logs that join mode.
 
 Relay logs are emitted to stdout/stderr (Docker logs). Useful markers:
 

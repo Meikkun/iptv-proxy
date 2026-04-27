@@ -13,6 +13,8 @@ import (
 
 const relayReadBufferSize = 32 * 1024
 
+var errRelaySubscriberUnderrun = errors.New("relay subscriber underrun")
+
 type RelaySession struct {
 	manager *RelayManager
 	key     string
@@ -53,8 +55,16 @@ type relaySessionSummary struct {
 type RelaySubscription struct {
 	session *RelaySession
 	nextSeq uint64
+	delay   time.Duration
 	once    sync.Once
 }
+
+type relayJoinMode string
+
+const (
+	relayJoinModeTarget  relayJoinMode = "target"
+	relayJoinModePartial relayJoinMode = "partial"
+)
 
 func newRelaySession(manager *RelayManager, key, sessionID, channel, host string, open relaySourceOpener) *RelaySession {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -100,7 +110,7 @@ func (s *RelaySession) run() {
 		s.reconnectCount++
 		s.mu.Unlock()
 		s.manager.recordReconnect()
-		s.manager.logf("reconnect session=%s channel=%q upstream_host=%s backoff_ms=%d had_data=%t error=%q", s.id, s.channel, s.host, backoff.Milliseconds(), hadData, sanitizeRelayError(err))
+		s.manager.logf("session reconnect id=%s channel=%q host=%s backoff=%s had_data=%t error=%q", s.id, s.channel, s.host, backoff, hadData, sanitizeRelayError(err))
 
 		timer := time.NewTimer(backoff)
 		select {
@@ -164,6 +174,7 @@ func (s *RelaySession) streamOnce() (bool, error) {
 func (s *RelaySession) Subscribe(ctx context.Context) (*relayStart, error) {
 	startCtx, cancel := context.WithTimeout(ctx, relayStartupTimeout)
 	defer cancel()
+	joinWaitStart := time.Now()
 
 	s.mu.Lock()
 	if s.closed {
@@ -200,22 +211,15 @@ func (s *RelaySession) Subscribe(ctx context.Context) (*relayStart, error) {
 		}
 
 		if s.ready && s.buffer.hasData() {
-			startSeq := s.buffer.startSeqForDelay(s.manager.targetDelay)
-			start := &relayStart{
-				Header:     cloneHTTPHeader(s.responseHeader),
-				StatusCode: s.statusCode,
-				Subscription: &RelaySubscription{
-					session: s,
-					nextSeq: startSeq,
-				},
-			}
 			coverage := s.buffer.coverage()
-			subscribers := s.subscribers
-			subscribed = true
-			s.mu.Unlock()
-			s.manager.RecordHit()
-			s.manager.logf("subscriber_joined session=%s channel=%q subs=%d coverage_ms=%d target_delay_ms=%d", s.id, s.channel, subscribers, coverage.Milliseconds(), s.manager.targetDelay.Milliseconds())
-			return start, nil
+			if s.manager.targetDelay <= 0 || coverage >= s.manager.targetDelay {
+				start, coverage, subscribers := s.startLocked(s.manager.targetDelay)
+				subscribed = true
+				s.mu.Unlock()
+				s.manager.RecordHit()
+				s.logJoin(start.Subscription.delay, coverage, subscribers, relayJoinModeTarget, time.Since(joinWaitStart))
+				return start, nil
+			}
 		}
 
 		waitCh := s.signal
@@ -225,6 +229,27 @@ func (s *RelaySession) Subscribe(ctx context.Context) (*relayStart, error) {
 
 		select {
 		case <-startCtx.Done():
+			s.mu.Lock()
+			if s.closed {
+				err := s.lastError
+				if err == nil {
+					err = io.EOF
+				}
+				s.mu.Unlock()
+				return nil, err
+			}
+
+			if s.ready && s.buffer.hasData() {
+				coverage := s.buffer.coverage()
+				start, coverage, subscribers := s.startLocked(coverage)
+				subscribed = true
+				s.mu.Unlock()
+				s.manager.RecordHit()
+				s.logJoin(start.Subscription.delay, coverage, subscribers, relayJoinModePartial, time.Since(joinWaitStart))
+				return start, nil
+			}
+
+			s.mu.Unlock()
 			if lastErr != nil && !hasSuccess {
 				return nil, lastErr
 			}
@@ -232,6 +257,36 @@ func (s *RelaySession) Subscribe(ctx context.Context) (*relayStart, error) {
 		case <-waitCh:
 		}
 	}
+}
+
+func (s *RelaySession) startLocked(playbackDelay time.Duration) (*relayStart, time.Duration, int) {
+	startSeq := s.buffer.startSeqForDelay(playbackDelay)
+	coverage := s.buffer.coverage()
+	subscribers := s.subscribers
+
+	return &relayStart{
+		Header:     cloneHTTPHeader(s.responseHeader),
+		StatusCode: s.statusCode,
+		Subscription: &RelaySubscription{
+			session: s,
+			nextSeq: startSeq,
+			delay:   playbackDelay,
+		},
+	}, coverage, subscribers
+}
+
+func (s *RelaySession) logJoin(delay, coverage time.Duration, subscribers int, mode relayJoinMode, waited time.Duration) {
+	s.manager.logf(
+		"subscriber join session=%s channel=%q subs=%d coverage=%s effective_delay=%s target_delay=%s waited=%s mode=%s",
+		s.id,
+		s.channel,
+		subscribers,
+		coverage,
+		delay,
+		s.manager.targetDelay,
+		waited,
+		mode,
+	)
 }
 
 func (s *RelaySession) appendChunk(data []byte) {
@@ -274,11 +329,11 @@ func (s *RelaySession) recordReady(statusCode int, header http.Header) {
 
 	startup := time.Since(s.createdAt)
 	if isReconnectRecovery {
-		s.manager.logf("reconnect_recovered session=%s channel=%q upstream_host=%s status=%d content_type=%q startup_ms=%d", s.id, s.channel, s.host, statusCode, contentType, startup.Milliseconds())
+		s.manager.logf("session recovered id=%s channel=%q host=%s status=%d content_type=%q startup=%s", s.id, s.channel, s.host, statusCode, contentType, startup)
 		return
 	}
 
-	s.manager.logf("session_ready session=%s channel=%q upstream_host=%s status=%d content_type=%q startup_ms=%d", s.id, s.channel, s.host, statusCode, contentType, startup.Milliseconds())
+	s.manager.logf("session ready id=%s channel=%q host=%s status=%d content_type=%q startup=%s", s.id, s.channel, s.host, statusCode, contentType, startup)
 }
 
 func (s *RelaySession) recordError(err error) {
@@ -300,7 +355,7 @@ func (s *RelaySession) nextChunk(ctx context.Context, nextSeq uint64) (relayChun
 		s.mu.Lock()
 		if !s.buffer.seqAvailable(nextSeq) {
 			s.mu.Unlock()
-			return relayChunk{}, fmt.Errorf("subscriber underrun: requested seq %d has been trimmed from buffer", nextSeq)
+			return relayChunk{}, fmt.Errorf("%w: requested seq %d has been trimmed from buffer", errRelaySubscriberUnderrun, nextSeq)
 		}
 		if chunk, ok := s.buffer.chunkAtOrAfter(nextSeq); ok {
 			s.mu.Unlock()
@@ -335,7 +390,7 @@ func (s *RelaySession) removeSubscriber() {
 		s.subscribers--
 	}
 
-	s.manager.logf("subscriber_left session=%s channel=%q subs=%d", s.id, s.channel, s.subscribers)
+	s.manager.logf("subscriber leave session=%s channel=%q remaining=%d", s.id, s.channel, s.subscribers)
 
 	if s.subscribers == 0 {
 		s.scheduleIdleStopLocked()
@@ -383,8 +438,34 @@ func (s *RelaySubscription) NextChunk(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 
+	if err := waitForRelayChunkRelease(ctx, chunk.receivedAt, s.delay); err != nil {
+		return nil, err
+	}
+
 	s.nextSeq = chunk.seq + 1
 	return chunk.data, nil
+}
+
+func waitForRelayChunkRelease(ctx context.Context, receivedAt time.Time, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+
+	releaseAt := receivedAt.Add(delay)
+	wait := time.Until(releaseAt)
+	if wait <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (s *RelaySubscription) Close() {
@@ -424,7 +505,7 @@ func (s *RelaySession) closeWithReason(reason string) {
 	s.mu.Unlock()
 
 	s.cancel()
-	s.manager.logf("session_closed session=%s channel=%q upstream_host=%s reason=%s lifetime_ms=%d reconnects=%d peak_subs=%d upstream_bytes=%d buffered_coverage_ms=%d buffered_bytes=%d", s.id, s.channel, s.host, closeReason, lifetime.Milliseconds(), reconnectCount, peakSubscribers, upstreamBytes, bufferCoverage.Milliseconds(), bufferBytes)
+	s.manager.logf("session close id=%s channel=%q host=%s reason=%s lifetime=%s reconnects=%d peak_subs=%d upstream=%s buffered=%s coverage=%s", s.id, s.channel, s.host, closeReason, lifetime, reconnectCount, peakSubscribers, relayFormatBytes(upstreamBytes), relayFormatBytes(int64(bufferBytes)), bufferCoverage)
 }
 
 func (s *RelaySession) summarySnapshot() relaySessionSummary {

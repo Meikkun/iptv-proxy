@@ -218,10 +218,10 @@ func TestIsRelayEligibleTrack(t *testing.T) {
 	}
 }
 
-func TestRelaySessionSubscriberCatchesUpAfterJoinDelay(t *testing.T) {
+func TestRelaySessionSubscribeWaitsForTargetDelayCoverage(t *testing.T) {
 	manager := &RelayManager{
 		bufferDuration: 10 * time.Second,
-		targetDelay:    2 * time.Second,
+		targetDelay:    60 * time.Millisecond,
 		idleTimeout:    time.Second,
 		reconnectDelay: 10 * time.Millisecond,
 		reconnectMax:   10 * time.Millisecond,
@@ -240,55 +240,109 @@ func TestRelaySessionSubscriberCatchesUpAfterJoinDelay(t *testing.T) {
 	go session.run()
 	defer session.close()
 
+	resultCh := make(chan error, 1)
+	go func() {
+		start, err := session.Subscribe(context.Background())
+		if err == nil {
+			start.Subscription.Close()
+		}
+		resultCh <- err
+	}()
+
 	if _, err := writer.Write([]byte("chunk1")); err != nil {
 		t.Fatalf("writer.Write() error = %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case err := <-resultCh:
+		t.Fatalf("Subscribe() returned before enough coverage, err=%v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	time.Sleep(70 * time.Millisecond)
 	if _, err := writer.Write([]byte("chunk2")); err != nil {
 		t.Fatalf("writer.Write() error = %v", err)
 	}
 
-	start, err := session.Subscribe(context.Background())
-	if err != nil {
-		t.Fatalf("session.Subscribe() error = %v", err)
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("session.Subscribe() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe() did not return after reaching target coverage")
 	}
-	defer start.Subscription.Close()
 
-	// With a 2s target delay and only ~50ms between chunks, the subscriber
-	// should start at the oldest chunk because the delay is larger than coverage.
-	first, err := start.Subscription.NextChunk(context.Background())
+	_ = writer.Close()
+}
+
+func TestRelaySubscriptionMaintainsConfiguredDelay(t *testing.T) {
+	manager := &RelayManager{
+		bufferDuration: 10 * time.Second,
+		targetDelay:    120 * time.Millisecond,
+		idleTimeout:    time.Second,
+		reconnectDelay: 10 * time.Millisecond,
+		reconnectMax:   10 * time.Millisecond,
+		maxBufferBytes: 1024,
+		sessions:       make(map[string]*RelaySession),
+	}
+
+	session := newRelaySession(manager, "channel", "session-delay", "channel", "provider.example", nil)
+	now := time.Now()
+
+	session.mu.Lock()
+	session.ready = true
+	session.statusCode = http.StatusOK
+	session.responseHeader = http.Header{"Content-Type": []string{"video/mp2t"}}
+	session.buffer.append(now.Add(-120*time.Millisecond), []byte("chunk1"))
+	session.buffer.append(now.Add(-60*time.Millisecond), []byte("chunk2"))
+	session.buffer.append(now, []byte("chunk3"))
+	session.mu.Unlock()
+
+	subscription := &RelaySubscription{
+		session: session,
+		nextSeq: session.buffer.startSeqForDelay(manager.targetDelay),
+		delay:   manager.targetDelay,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	firstStarted := time.Now()
+	first, err := subscription.NextChunk(ctx)
 	if err != nil {
 		t.Fatalf("NextChunk() error = %v", err)
 	}
 	if string(first) != "chunk1" {
 		t.Fatalf("first chunk = %q, want chunk1", string(first))
 	}
+	if elapsed := time.Since(firstStarted); elapsed > 40*time.Millisecond {
+		t.Fatalf("first chunk waited %v, want immediate delivery", elapsed)
+	}
 
-	second, err := start.Subscription.NextChunk(context.Background())
+	secondStarted := time.Now()
+	second, err := subscription.NextChunk(ctx)
 	if err != nil {
 		t.Fatalf("NextChunk() error = %v", err)
 	}
 	if string(second) != "chunk2" {
 		t.Fatalf("second chunk = %q, want chunk2", string(second))
 	}
+	if elapsed := time.Since(secondStarted); elapsed < 35*time.Millisecond {
+		t.Fatalf("second chunk waited %v, want paced delivery", elapsed)
+	}
 
-	// After consuming all buffered chunks, the next chunk should wait for new data.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		writer.Write([]byte("chunk3")) // nolint: errcheck
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	third, err := start.Subscription.NextChunk(ctx)
+	thirdStarted := time.Now()
+	third, err := subscription.NextChunk(ctx)
 	if err != nil {
 		t.Fatalf("NextChunk() error = %v", err)
 	}
 	if string(third) != "chunk3" {
 		t.Fatalf("third chunk = %q, want chunk3", string(third))
 	}
-
-	_ = writer.Close()
+	if elapsed := time.Since(thirdStarted); elapsed < 35*time.Millisecond {
+		t.Fatalf("third chunk waited %v, want paced buffered delivery", elapsed)
+	}
 }
 
 func TestRelaySessionSlowSubscriberUnderrun(t *testing.T) {

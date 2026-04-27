@@ -54,6 +54,7 @@ func (c *Config) reverseProxy(ctx *gin.Context) {
 		c.relayStream(ctx, rpURL)
 		return
 	} else if c.relayManager != nil {
+		c.logRelayBypass(ctx, bypassReason)
 		c.relayManager.RecordBypass(bypassReason, c.track, ctx.Request.Header)
 	}
 
@@ -113,6 +114,14 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 		return
 	}
 	defer start.Subscription.Close()
+	c.relayManager.logf(
+		"request relay session=%s channel=%q client=%s path=%q range_present=%t",
+		session.id,
+		session.channel,
+		ctx.ClientIP(),
+		ctx.Request.URL.Path,
+		ctx.Request.Header.Get("Range") != "",
+	)
 
 	relayHeader := sanitizeRelayResponseHeader(start.Header)
 	mergeHttpHeader(ctx.Writer.Header(), relayHeader)
@@ -123,9 +132,15 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 		chunk, err := start.Subscription.NextChunk(ctx.Request.Context())
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
+				c.logRelaySubscriberEnd(session, ctx, "client_canceled", err)
 				return
 			}
 
+			reason := "session_error"
+			if errors.Is(err, errRelaySubscriberUnderrun) {
+				reason = "underrun"
+			}
+			c.logRelaySubscriberEnd(session, ctx, reason, err)
 			return
 		}
 
@@ -134,6 +149,7 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 		}
 
 		if _, err := ctx.Writer.Write(chunk); err != nil {
+			c.logRelaySubscriberEnd(session, ctx, "downstream_write", err)
 			return
 		}
 
@@ -141,6 +157,38 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 			flusher.Flush()
 		}
 	}
+}
+
+func (c *Config) logRelayBypass(ctx *gin.Context, reason relayBypassReason) {
+	if c.relayManager == nil || reason == relayBypassNone {
+		return
+	}
+
+	rangeValue := ctx.Request.Header.Get("Range")
+	c.relayManager.logf(
+		"request bypass channel=%q client=%s reason=%s path=%q range=%q",
+		relayTrackLabel(c.track, nil),
+		ctx.ClientIP(),
+		reason,
+		ctx.Request.URL.Path,
+		rangeValue,
+	)
+}
+
+func (c *Config) logRelaySubscriberEnd(session *RelaySession, ctx *gin.Context, reason string, err error) {
+	if c.relayManager == nil || session == nil {
+		return
+	}
+
+	c.relayManager.logf(
+		"subscriber end session=%s channel=%q client=%s path=%q reason=%s error=%q",
+		session.id,
+		session.channel,
+		ctx.ClientIP(),
+		ctx.Request.URL.Path,
+		reason,
+		sanitizeRelayError(err),
+	)
 }
 
 var relayHeaderDenylist = []string{

@@ -59,6 +59,7 @@ type relaySummarySnapshot struct {
 	activeSessions    int
 	activeSubscribers int
 	bufferedBytes     int
+	maxCoverage       time.Duration
 	counters          relayCounters
 }
 
@@ -165,7 +166,7 @@ func (m *RelayManager) GetOrCreate(rawURL *url.URL, requestHeader http.Header, t
 	)
 	m.sessions[key] = session
 	m.recordSessionCreated()
-	m.logf("session_created session=%s channel=%q upstream_host=%s", sessionID, channel, upstreamHost)
+	m.logf("session create id=%s channel=%q host=%s", sessionID, channel, upstreamHost)
 	go session.run()
 
 	return session
@@ -236,7 +237,7 @@ func (m *RelayManager) RecordBypass(reason relayBypassReason, track *m3u.Track, 
 	}
 
 	channel := relayTrackLabel(track, nil)
-	m.logf("bypass reason=%s channel=%q", reason, channel)
+	m.logf("request bypass channel=%q reason=%s", channel, reason)
 }
 
 func (m *RelayManager) recordReconnect() {
@@ -259,14 +260,14 @@ func (m *RelayManager) recordSessionCreated() {
 
 func (m *RelayManager) logStartupConfig() {
 	m.logf(
-		"enabled=true buffer_ms=%d target_delay_ms=%d idle_timeout_ms=%d reconnect_delay_ms=%d reconnect_max_ms=%d max_buffer_mb=%d summary_interval_ms=%d verbose=%t",
-		m.bufferDuration.Milliseconds(),
-		m.targetDelay.Milliseconds(),
-		m.idleTimeout.Milliseconds(),
-		m.reconnectDelay.Milliseconds(),
-		m.reconnectMax.Milliseconds(),
-		m.maxBufferBytes/(1024*1024),
-		m.logSummaryEvery.Milliseconds(),
+		"config enabled=true buffer=%s target_delay=%s idle_timeout=%s reconnect=%s..%s max_buffer=%s summary_every=%s verbose=%t",
+		m.bufferDuration,
+		m.targetDelay,
+		m.idleTimeout,
+		m.reconnectDelay,
+		m.reconnectMax,
+		relayFormatBytes(int64(m.maxBufferBytes)),
+		m.logSummaryEvery,
 		m.logVerbose,
 	)
 }
@@ -274,19 +275,20 @@ func (m *RelayManager) logStartupConfig() {
 func (m *RelayManager) logSummary() {
 	snapshot := m.summarySnapshot()
 	m.logf(
-		"summary active_sessions=%d active_subscribers=%d sessions_created=%d relay_hits=%d bypass_hls=%d bypass_range=%d bypass_no_track=%d bypass_ineligible_ext=%d bypass_vod=%d reconnects=%d upstream_failures=%d buffered_mb=%d",
+		"summary sessions=%d subscribers=%d created=%d hits=%d reconnects=%d failures=%d buffered=%s max_coverage=%s bypass(range=%d hls=%d no_track=%d ineligible_ext=%d vod=%d)",
 		snapshot.activeSessions,
 		snapshot.activeSubscribers,
 		snapshot.counters.sessionsCreated,
 		snapshot.counters.relayHits,
-		snapshot.counters.bypassHLS,
+		snapshot.counters.reconnects,
+		snapshot.counters.upstreamFailures,
+		relayFormatBytes(int64(snapshot.bufferedBytes)),
+		snapshot.maxCoverage,
 		snapshot.counters.bypassRange,
+		snapshot.counters.bypassHLS,
 		snapshot.counters.bypassNoTrack,
 		snapshot.counters.bypassIneligibleExt,
 		snapshot.counters.bypassVOD,
-		snapshot.counters.reconnects,
-		snapshot.counters.upstreamFailures,
-		snapshot.bufferedBytes/(1024*1024),
 	)
 }
 
@@ -300,10 +302,14 @@ func (m *RelayManager) summarySnapshot() relaySummarySnapshot {
 
 	activeSubscribers := 0
 	bufferedBytes := 0
+	maxCoverage := time.Duration(0)
 	for _, session := range sessions {
 		summary := session.summarySnapshot()
 		activeSubscribers += summary.subscribers
 		bufferedBytes += summary.bufferBytes
+		if summary.coverage > maxCoverage {
+			maxCoverage = summary.coverage
+		}
 	}
 
 	m.statsMu.Lock()
@@ -314,12 +320,32 @@ func (m *RelayManager) summarySnapshot() relaySummarySnapshot {
 		activeSessions:    len(sessions),
 		activeSubscribers: activeSubscribers,
 		bufferedBytes:     bufferedBytes,
+		maxCoverage:       maxCoverage,
 		counters:          counters,
 	}
 }
 
 func (m *RelayManager) logf(format string, args ...interface{}) {
 	log.Printf("[relay] "+format, args...)
+}
+
+func relayFormatBytes(n int64) string {
+	const (
+		kb = 1024
+		mb = 1024 * kb
+		gb = 1024 * mb
+	)
+
+	switch {
+	case n >= gb:
+		return fmt.Sprintf("%.1fGB", float64(n)/float64(gb))
+	case n >= mb:
+		return fmt.Sprintf("%.1fMB", float64(n)/float64(mb))
+	case n >= kb:
+		return fmt.Sprintf("%.1fKB", float64(n)/float64(kb))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
 
 func relaySessionKey(rawURL *url.URL, requestHeader http.Header) string {
