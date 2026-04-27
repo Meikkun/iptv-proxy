@@ -114,7 +114,8 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 	}
 	defer start.Subscription.Close()
 
-	mergeHttpHeader(ctx.Writer.Header(), start.Header)
+	relayHeader := sanitizeRelayResponseHeader(start.Header)
+	mergeHttpHeader(ctx.Writer.Header(), relayHeader)
 	ctx.Status(start.StatusCode)
 
 	flusher, _ := ctx.Writer.(http.Flusher)
@@ -140,6 +141,28 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 			flusher.Flush()
 		}
 	}
+}
+
+var relayHeaderDenylist = []string{
+	"Content-Length",
+	"Content-Range",
+	"Accept-Ranges",
+	"Transfer-Encoding",
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Upgrade",
+}
+
+func sanitizeRelayResponseHeader(header http.Header) http.Header {
+	cleaned := header.Clone()
+	for _, name := range relayHeaderDenylist {
+		cleaned.Del(name)
+	}
+	return cleaned
 }
 
 func (c *Config) shouldUseRelay(ctx *gin.Context) (bool, relayBypassReason) {

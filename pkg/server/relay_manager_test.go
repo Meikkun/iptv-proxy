@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ func TestRelayEligibilityReasons(t *testing.T) {
 		{name: "hls", track: &m3u.Track{URI: "http://provider/channel.m3u8"}, headers: http.Header{}, wantOK: false, wantReason: relayBypassHLS},
 		{name: "ineligible ext", track: &m3u.Track{URI: "http://provider/channel"}, headers: http.Header{}, wantOK: false, wantReason: relayBypassIneligibleExt},
 		{name: "eligible ts", track: &m3u.Track{URI: "http://provider/channel.ts"}, headers: http.Header{}, wantOK: true, wantReason: relayBypassNone},
+		{name: "vod positive duration", track: &m3u.Track{URI: "http://provider/movie.ts", Length: 3600}, headers: http.Header{}, wantOK: false, wantReason: relayBypassVOD},
 	}
 
 	for _, tc := range tests {
@@ -53,6 +55,26 @@ func TestRelaySessionIDIsStableAndRedacted(t *testing.T) {
 
 	if idOne == key {
 		t.Fatalf("relaySessionID() should be redacted hash, got raw key")
+	}
+}
+
+func TestRelaySessionKeyIgnoresNonAuthHeaders(t *testing.T) {
+	urlA, _ := url.Parse("http://provider.example/live/channel.ts")
+	urlB, _ := url.Parse("http://provider.example/live/channel.ts")
+
+	authHeaders := http.Header{"Authorization": []string{"Bearer token"}}
+	extraHeaders := http.Header{
+		"Authorization":    []string{"Bearer token"},
+		"User-Agent":       []string{"PlayerA"},
+		"Accept-Language":  []string{"en-US"},
+		"Referer":          []string{"http://example.com"},
+	}
+
+	keyA := relaySessionKey(urlA, authHeaders)
+	keyB := relaySessionKey(urlB, extraHeaders)
+
+	if keyA != keyB {
+		t.Fatalf("relaySessionKey should ignore non-auth headers for sharing: %q != %q", keyA, keyB)
 	}
 }
 

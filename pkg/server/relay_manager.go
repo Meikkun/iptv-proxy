@@ -20,13 +20,8 @@ import (
 const relayStartupTimeout = defaultUpstreamRequestTimeout
 
 var relayHeaderAllowlist = []string{
-	"Accept",
-	"Accept-Language",
 	"Authorization",
 	"Cookie",
-	"Origin",
-	"Referer",
-	"User-Agent",
 }
 
 type relayUpstreamResponse struct {
@@ -45,6 +40,7 @@ const (
 	relayBypassRange         relayBypassReason = "range"
 	relayBypassHLS           relayBypassReason = "hls"
 	relayBypassIneligibleExt relayBypassReason = "ineligible_ext"
+	relayBypassVOD           relayBypassReason = "vod"
 )
 
 type relayCounters struct {
@@ -56,6 +52,7 @@ type relayCounters struct {
 	bypassRange         uint64
 	bypassHLS           uint64
 	bypassIneligibleExt uint64
+	bypassVOD           uint64
 }
 
 type relaySummarySnapshot struct {
@@ -229,6 +226,8 @@ func (m *RelayManager) RecordBypass(reason relayBypassReason, track *m3u.Track, 
 		m.stats.bypassHLS++
 	case relayBypassIneligibleExt:
 		m.stats.bypassIneligibleExt++
+	case relayBypassVOD:
+		m.stats.bypassVOD++
 	}
 	m.statsMu.Unlock()
 
@@ -275,7 +274,7 @@ func (m *RelayManager) logStartupConfig() {
 func (m *RelayManager) logSummary() {
 	snapshot := m.summarySnapshot()
 	m.logf(
-		"summary active_sessions=%d active_subscribers=%d sessions_created=%d relay_hits=%d bypass_hls=%d bypass_range=%d bypass_no_track=%d bypass_ineligible_ext=%d reconnects=%d upstream_failures=%d buffered_mb=%d",
+		"summary active_sessions=%d active_subscribers=%d sessions_created=%d relay_hits=%d bypass_hls=%d bypass_range=%d bypass_no_track=%d bypass_ineligible_ext=%d bypass_vod=%d reconnects=%d upstream_failures=%d buffered_mb=%d",
 		snapshot.activeSessions,
 		snapshot.activeSubscribers,
 		snapshot.counters.sessionsCreated,
@@ -284,6 +283,7 @@ func (m *RelayManager) logSummary() {
 		snapshot.counters.bypassRange,
 		snapshot.counters.bypassNoTrack,
 		snapshot.counters.bypassIneligibleExt,
+		snapshot.counters.bypassVOD,
 		snapshot.counters.reconnects,
 		snapshot.counters.upstreamFailures,
 		snapshot.bufferedBytes/(1024*1024),
@@ -433,6 +433,11 @@ func relayEligibility(track *m3u.Track, requestHeader http.Header) (bool, relayB
 
 	if requestHeader.Get("Range") != "" {
 		return false, relayBypassRange
+	}
+
+	// VOD-like tracks (positive EXTINF duration) are not relayed.
+	if track.Length > 0 {
+		return false, relayBypassVOD
 	}
 
 	lowerURI := strings.ToLower(track.URI)

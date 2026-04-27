@@ -93,6 +93,11 @@ func (b *relayBuffer) startSeqForDelay(delay time.Duration) uint64 {
 	return b.chunks[0].seq
 }
 
+// seqAvailable reports whether seq is still retained in the buffer.
+func (b *relayBuffer) seqAvailable(seq uint64) bool {
+	return len(b.chunks) > 0 && seq >= b.chunks[0].seq
+}
+
 func (b *relayBuffer) chunkAtOrAfter(seq uint64) (relayChunk, bool) {
 	if len(b.chunks) == 0 {
 		return relayChunk{}, false

@@ -88,7 +88,7 @@ func (s *RelaySession) run() {
 			return
 		}
 
-		if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) && s.ctx.Err() != nil {
+		if errors.Is(err, context.Canceled) || (errors.Is(err, io.EOF) && s.ctx.Err() != nil) {
 			return
 		}
 
@@ -147,6 +147,12 @@ func (s *RelaySession) streamOnce() (bool, error) {
 		}
 
 		if errors.Is(readErr, io.EOF) {
+			if hadData {
+				// Clean EOF after receiving data: likely a finite stream.
+				// Let the caller decide whether to reconnect or close.
+				s.recordError(readErr)
+				return hadData, readErr
+			}
 			readErr = io.ErrUnexpectedEOF
 		}
 
@@ -292,6 +298,10 @@ func (s *RelaySession) recordError(err error) {
 func (s *RelaySession) nextChunk(ctx context.Context, nextSeq uint64) (relayChunk, error) {
 	for {
 		s.mu.Lock()
+		if !s.buffer.seqAvailable(nextSeq) {
+			s.mu.Unlock()
+			return relayChunk{}, fmt.Errorf("subscriber underrun: requested seq %d has been trimmed from buffer", nextSeq)
+		}
 		if chunk, ok := s.buffer.chunkAtOrAfter(nextSeq); ok {
 			s.mu.Unlock()
 			return chunk, nil

@@ -182,7 +182,7 @@ func init() {
 	rootCmd.Flags().BoolP("xtream-api-get", "", false, "Generate get.php from xtream API instead of get.php original endpoint")
 	rootCmd.Flags().Bool("relay-enabled", true, "Enable shared buffered relay for eligible non-HLS live TS streams")
 	rootCmd.Flags().Duration("relay-buffer-duration", 10*time.Second, "Buffered relay retention window for eligible live streams")
-	rootCmd.Flags().Duration("relay-target-delay", 4*time.Second, "Target playback delay behind the live edge for buffered relay")
+	rootCmd.Flags().Duration("relay-target-delay", 4*time.Second, "Initial subscriber join delay behind the live edge for buffered relay (prebuffer, not continuously maintained)")
 	rootCmd.Flags().Duration("relay-idle-timeout", 30*time.Second, "How long an idle relay session stays alive after the last viewer disconnects")
 	rootCmd.Flags().Duration("relay-reconnect-delay", 250*time.Millisecond, "Initial reconnect backoff for buffered relay sessions")
 	rootCmd.Flags().Duration("relay-reconnect-max", 5*time.Second, "Maximum reconnect backoff for buffered relay sessions")
