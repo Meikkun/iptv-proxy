@@ -203,22 +203,22 @@ func TestRelaySessionIdleTimeoutClosesSession(t *testing.T) {
 	t.Fatal("relay session was not removed after idle timeout")
 }
 
-func TestIsRelayEligibleTrack(t *testing.T) {
+func TestRelayEligibility(t *testing.T) {
 	track := &m3u.Track{URI: "http://provider.example/live/channel.ts"}
-	if !isRelayEligibleTrack(track, http.Header{}) {
-		t.Fatal("isRelayEligibleTrack() = false, want true")
+	if ok, _ := relayEligibility(track, http.Header{}); !ok {
+		t.Fatal("relayEligibility() = false, want true")
 	}
-	if !isRelayEligibleTrack(track, http.Header{"Range": []string{"bytes=0-"}}) {
-		t.Fatal("isRelayEligibleTrack() = false with bytes=0-, want true")
+	if ok, _ := relayEligibility(track, http.Header{"Range": []string{"bytes=0-"}}); !ok {
+		t.Fatal("relayEligibility() = false with bytes=0-, want true")
 	}
 
 	hlsTrack := &m3u.Track{URI: "http://provider.example/live/channel.m3u8"}
-	if isRelayEligibleTrack(hlsTrack, http.Header{}) {
-		t.Fatal("isRelayEligibleTrack() = true for HLS, want false")
+	if ok, _ := relayEligibility(hlsTrack, http.Header{}); ok {
+		t.Fatal("relayEligibility() = true for HLS, want false")
 	}
 
-	if isRelayEligibleTrack(track, http.Header{"Range": []string{"bytes=0-10"}}) {
-		t.Fatal("isRelayEligibleTrack() = true with Range header, want false")
+	if ok, _ := relayEligibility(track, http.Header{"Range": []string{"bytes=0-10"}}); ok {
+		t.Fatal("relayEligibility() = true with Range header, want false")
 	}
 }
 

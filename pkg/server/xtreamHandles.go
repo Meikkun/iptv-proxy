@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -43,11 +43,18 @@ import (
 )
 
 type cacheMeta struct {
-	string
-	time.Time
+	path      string
+	createdAt time.Time
 }
 
-var hlsChannelsRedirectURL map[string]url.URL = map[string]url.URL{}
+type hlsRedirectMeta struct {
+	targetURL url.URL
+	createdAt time.Time
+}
+
+const hlsRedirectTTL = 10 * time.Minute
+
+var hlsChannelsRedirectURL map[string]hlsRedirectMeta = map[string]hlsRedirectMeta{}
 var hlsChannelsRedirectURLLock = sync.RWMutex{}
 
 // XXX Use key/value storage e.g: etcd, redis...
@@ -62,8 +69,8 @@ func (c *Config) cacheXtreamM3u(playlist *m3u.Playlist, cacheName string) error 
 	tmp := *c
 	tmp.playlist = playlist
 
-	path := filepath.Join(os.TempDir(), uuid.NewV4().String()+".iptv-proxy.m3u")
-	f, err := os.Create(path)
+	playlistPath := filepath.Join(os.TempDir(), uuid.NewV4().String()+".iptv-proxy.m3u")
+	f, err := os.Create(playlistPath)
 	if err != nil {
 		return err
 	}
@@ -72,9 +79,55 @@ func (c *Config) cacheXtreamM3u(playlist *m3u.Playlist, cacheName string) error 
 	if err := tmp.marshallInto(f, true); err != nil {
 		return err
 	}
-	xtreamM3uCache[cacheName] = cacheMeta{path, time.Now()}
+
+	if existing, ok := xtreamM3uCache[cacheName]; ok && existing.path != "" && existing.path != playlistPath {
+		if removeErr := os.Remove(existing.path); removeErr != nil && !os.IsNotExist(removeErr) {
+			utils.DebugLog("unable to remove stale xtream cache file %q: %v", existing.path, removeErr)
+		}
+	}
+
+	xtreamM3uCache[cacheName] = cacheMeta{
+		path:      playlistPath,
+		createdAt: time.Now(),
+	}
 
 	return nil
+}
+
+func xtreamCacheTTL(expirationHours int) time.Duration {
+	if expirationHours <= 0 {
+		return 0
+	}
+
+	return time.Duration(expirationHours) * time.Hour
+}
+
+func isXtreamCacheExpired(meta cacheMeta, now time.Time, ttl time.Duration) bool {
+	if meta.path == "" || meta.createdAt.IsZero() {
+		return true
+	}
+
+	if ttl <= 0 {
+		return true
+	}
+
+	return now.Sub(meta.createdAt) >= ttl
+}
+
+func cleanupExpiredXtreamCacheEntries(now time.Time, ttl time.Duration) {
+	for cacheKey, meta := range xtreamM3uCache {
+		if !isXtreamCacheExpired(meta, now, ttl) {
+			continue
+		}
+
+		if meta.path != "" {
+			if err := os.Remove(meta.path); err != nil && !os.IsNotExist(err) {
+				utils.DebugLog("unable to remove expired xtream cache file %q: %v", meta.path, err)
+			}
+		}
+
+		delete(xtreamM3uCache, cacheKey)
+	}
 }
 
 func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Playlist, error) {
@@ -164,32 +217,35 @@ func (c *Config) xtreamGet(ctx *gin.Context) {
 		return
 	}
 
-	xtreamM3uCacheLock.RLock()
-	meta, ok := xtreamM3uCache[m3uURL.String()]
-	d := time.Since(meta.Time)
-	if !ok || d.Hours() >= float64(c.M3UCacheExpiration) {
+	ttl := xtreamCacheTTL(c.M3UCacheExpiration)
+	cacheKey := m3uURL.String()
+	now := time.Now()
+
+	xtreamM3uCacheLock.Lock()
+	cleanupExpiredXtreamCacheEntries(now, ttl)
+	meta, ok := xtreamM3uCache[cacheKey]
+	xtreamM3uCacheLock.Unlock()
+
+	if !ok || isXtreamCacheExpired(meta, now, ttl) {
 		log.Printf("[iptv-proxy] %v | %s | xtream cache m3u file\n", time.Now().Format("2006/01/02 - 15:04:05"), ctx.ClientIP())
-		xtreamM3uCacheLock.RUnlock()
 		playlist, err := m3u.Parse(m3uURL.String())
 		if err != nil {
 			ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 			return
 		}
-		if err := c.cacheXtreamM3u(&playlist, m3uURL.String()); err != nil {
+		if err := c.cacheXtreamM3u(&playlist, cacheKey); err != nil {
 			ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 			return
 		}
-	} else {
-		xtreamM3uCacheLock.RUnlock()
 	}
 
 	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
 	xtreamM3uCacheLock.RLock()
-	path := xtreamM3uCache[m3uURL.String()].string
+	cachePath := xtreamM3uCache[cacheKey].path
 	xtreamM3uCacheLock.RUnlock()
 	ctx.Header("Content-Type", "application/octet-stream")
 
-	ctx.File(path)
+	ctx.File(cachePath)
 }
 
 func (c *Config) xtreamApiGet(ctx *gin.Context) {
@@ -202,12 +258,16 @@ func (c *Config) xtreamApiGet(ctx *gin.Context) {
 		cacheName = apiGet + extension
 	)
 
-	xtreamM3uCacheLock.RLock()
+	ttl := xtreamCacheTTL(c.M3UCacheExpiration)
+	now := time.Now()
+
+	xtreamM3uCacheLock.Lock()
+	cleanupExpiredXtreamCacheEntries(now, ttl)
 	meta, ok := xtreamM3uCache[cacheName]
-	d := time.Since(meta.Time)
-	if !ok || d.Hours() >= float64(c.M3UCacheExpiration) {
+	xtreamM3uCacheLock.Unlock()
+
+	if !ok || isXtreamCacheExpired(meta, now, ttl) {
 		log.Printf("[iptv-proxy] %v | %s | xtream cache API m3u file\n", time.Now().Format("2006/01/02 - 15:04:05"), ctx.ClientIP())
-		xtreamM3uCacheLock.RUnlock()
 		playlist, err := c.xtreamGenerateM3u(ctx, extension)
 		if err != nil {
 			ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
@@ -217,17 +277,15 @@ func (c *Config) xtreamApiGet(ctx *gin.Context) {
 			ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 			return
 		}
-	} else {
-		xtreamM3uCacheLock.RUnlock()
 	}
 
 	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
 	xtreamM3uCacheLock.RLock()
-	path := xtreamM3uCache[cacheName].string
+	cachePath := xtreamM3uCache[cacheName].path
 	xtreamM3uCacheLock.RUnlock()
 	ctx.Header("Content-Type", "application/octet-stream")
 
-	ctx.File(path)
+	ctx.File(cachePath)
 
 }
 
@@ -236,8 +294,12 @@ func (c *Config) xtreamPlayerAPIGET(ctx *gin.Context) {
 }
 
 func (c *Config) xtreamPlayerAPIPOST(ctx *gin.Context) {
-	contents, err := ioutil.ReadAll(ctx.Request.Body)
+	contents, err := readLimitedRequestBody(ctx.Request.Body, maxFormBodyBytes)
 	if err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			ctx.AbortWithStatus(http.StatusRequestEntityTooLarge)
+			return
+		}
 		ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 		return
 	}
@@ -265,6 +327,7 @@ func (c *Config) xtreamPlayerAPI(ctx *gin.Context, q url.Values) {
 
 	resp, httpcode, contentType, err := client.Action(c.ProxyConfig, action, q)
 	if err != nil {
+		httpcode = normalizeHTTPStatusForError(httpcode, err)
 		ctx.AbortWithError(httpcode, utils.PrintErrorAndReturn(err))
 		return
 	}
@@ -464,7 +527,7 @@ func (c *Config) xtreamHlsStream(ctx *gin.Context) {
 	}
 	channel := s[0]
 
-	url, err := getHlsRedirectURL(channel)
+	redirectURL, err := getHlsRedirectURL(c, channel)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 		return
@@ -473,8 +536,8 @@ func (c *Config) xtreamHlsStream(ctx *gin.Context) {
 	req, err := url.Parse(
 		fmt.Sprintf(
 			"%s://%s/hls/%s/%s",
-			url.Scheme,
-			url.Host,
+			redirectURL.Scheme,
+			redirectURL.Host,
 			ctx.Param("token"),
 			ctx.Param("chunk"),
 		),
@@ -491,7 +554,7 @@ func (c *Config) xtreamHlsStream(ctx *gin.Context) {
 func (c *Config) xtreamHlsrStream(ctx *gin.Context) {
 	channel := ctx.Param("channel")
 
-	url, err := getHlsRedirectURL(channel)
+	redirectURL, err := getHlsRedirectURL(c, channel)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 		return
@@ -500,8 +563,8 @@ func (c *Config) xtreamHlsrStream(ctx *gin.Context) {
 	req, err := url.Parse(
 		fmt.Sprintf(
 			"%s://%s/hlsr/%s/%s/%s/%s/%s/%s",
-			url.Scheme,
-			url.Host,
+			redirectURL.Scheme,
+			redirectURL.Host,
 			ctx.Param("token"),
 			c.XtreamUser,
 			c.XtreamPassword,
@@ -519,16 +582,18 @@ func (c *Config) xtreamHlsrStream(ctx *gin.Context) {
 	c.xtreamStream(ctx, req)
 }
 
-func getHlsRedirectURL(channel string) (*url.URL, error) {
-	hlsChannelsRedirectURLLock.RLock()
-	defer hlsChannelsRedirectURLLock.RUnlock()
+func getHlsRedirectURL(c *Config, channel string) (*url.URL, error) {
+	hlsChannelsRedirectURLLock.Lock()
+	defer hlsChannelsRedirectURLLock.Unlock()
+	pruneHLSRedirectsLocked(time.Now())
 
-	url, ok := hlsChannelsRedirectURL[channel+".m3u8"]
+	meta, ok := hlsChannelsRedirectURL[hlsRedirectKey(c, channel)]
 	if !ok {
 		return nil, utils.PrintErrorAndReturn(errors.New("HSL redirect url not found"))
 	}
 
-	return &url, nil
+	targetURL := meta.targetURL
+	return &targetURL, nil
 }
 
 func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
@@ -563,7 +628,11 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 		id := ctx.Param("id")
 		if strings.Contains(location.String(), id) {
 			hlsChannelsRedirectURLLock.Lock()
-			hlsChannelsRedirectURL[id] = *location
+			pruneHLSRedirectsLocked(time.Now())
+			hlsChannelsRedirectURL[hlsRedirectKey(c, id)] = hlsRedirectMeta{
+				targetURL: *location,
+				createdAt: time.Now(),
+			}
 			hlsChannelsRedirectURLLock.Unlock()
 
 			hlsReq, err := http.NewRequest("GET", location.String(), nil)
@@ -581,7 +650,7 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 			}
 			defer hlsResp.Body.Close()
 
-			b, err := ioutil.ReadAll(hlsResp.Body)
+			b, err := io.ReadAll(hlsResp.Body)
 			if err != nil {
 				ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 				return
@@ -599,4 +668,31 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 	}
 
 	ctx.Status(resp.StatusCode)
+}
+
+func normalizeHTTPStatusForError(statusCode int, err error) int {
+	if err == nil {
+		return statusCode
+	}
+
+	if statusCode == 0 {
+		return http.StatusInternalServerError
+	}
+
+	return statusCode
+}
+
+func hlsRedirectKey(c *Config, channel string) string {
+	canonicalChannel := strings.TrimSuffix(channel, ".m3u8")
+	return fmt.Sprintf("%s|%s|%s|%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, canonicalChannel)
+}
+
+func pruneHLSRedirectsLocked(now time.Time) {
+	for key, meta := range hlsChannelsRedirectURL {
+		if now.Sub(meta.createdAt) < hlsRedirectTTL {
+			continue
+		}
+
+		delete(hlsChannelsRedirectURL, key)
+	}
 }

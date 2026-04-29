@@ -133,10 +133,10 @@ func TestRelaySessionKeyIgnoresNonAuthHeaders(t *testing.T) {
 func TestRelaySummarySnapshotIncludesCountersAndSessions(t *testing.T) {
 	m := NewRelayManager(&config.ProxyConfig{RelayLogSummaryEvery: 0})
 
-	m.RecordBypass(relayBypassNoTrack, nil, http.Header{})
-	m.RecordBypass(relayBypassRange, &m3u.Track{URI: "http://provider/channel.ts"}, http.Header{"Range": []string{"bytes=0-10"}})
-	m.RecordBypass(relayBypassHLS, &m3u.Track{URI: "http://provider/channel.m3u8"}, http.Header{})
-	m.RecordBypass(relayBypassIneligibleExt, &m3u.Track{URI: "http://provider/channel"}, http.Header{})
+	m.RecordBypass(relayBypassNoTrack, nil)
+	m.RecordBypass(relayBypassRange, &m3u.Track{URI: "http://provider/channel.ts"})
+	m.RecordBypass(relayBypassHLS, &m3u.Track{URI: "http://provider/channel.m3u8"})
+	m.RecordBypass(relayBypassIneligibleExt, &m3u.Track{URI: "http://provider/channel"})
 	m.RecordHit()
 	m.recordReconnect()
 	m.recordUpstreamFailure()

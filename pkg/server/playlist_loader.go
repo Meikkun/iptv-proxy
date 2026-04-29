@@ -17,7 +17,7 @@ import (
 
 const groupTitleTagName = "group-title"
 
-var playlistTagsRegexp = regexp.MustCompile(`([a-zA-Z0-9-]+?)="([^"]+)"`)
+var playlistTagsRegexp = regexp.MustCompile(`([a-zA-Z0-9-]+?)="([^"]*)"`)
 
 func loadPlaylistSources(sources []string) (m3u.Playlist, error) {
 	merged := m3u.Playlist{
@@ -90,9 +90,13 @@ func parsePlaylist(reader io.Reader) (m3u.Playlist, error) {
 	playlist := m3u.Playlist{}
 
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 
-		if onFirstLine && !strings.HasPrefix(line, "#EXTM3U") {
+		if onFirstLine {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "\uFEFF"))
+		}
+
+		if onFirstLine && !strings.HasPrefix(strings.TrimSpace(line), "#EXTM3U") {
 			return m3u.Playlist{}, fmt.Errorf("invalid m3u file format. Expected #EXTM3U file header")
 		}
 
@@ -118,6 +122,12 @@ func parsePlaylist(reader io.Reader) (m3u.Playlist, error) {
 		return m3u.Playlist{}, err
 	}
 
+	for i, track := range playlist.Tracks {
+		if strings.TrimSpace(track.URI) == "" {
+			return m3u.Playlist{}, fmt.Errorf("missing uri for track %d (%q)", i, track.Name)
+		}
+	}
+
 	return playlist, nil
 }
 
@@ -128,7 +138,13 @@ func parseTrackMetadata(line string) (m3u.Track, error) {
 		return m3u.Track{}, fmt.Errorf("invalid m3u file format. Expected EXTINF metadata to contain track length and name data")
 	}
 
-	length, err := strconv.Atoi(strings.Split(trackInfo[0], " ")[0])
+	lengthMetadata := strings.TrimSpace(trackInfo[0])
+	lengthFields := strings.Fields(lengthMetadata)
+	if len(lengthFields) == 0 {
+		return m3u.Track{}, fmt.Errorf("invalid m3u file format. Expected EXTINF length")
+	}
+
+	length, err := strconv.Atoi(lengthFields[0])
 	if err != nil {
 		return m3u.Track{}, fmt.Errorf("unable to parse length")
 	}

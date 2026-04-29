@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -35,6 +34,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/utils"
 )
+
+const maxFormBodyBytes = 1 << 20
+
+var errRequestBodyTooLarge = errors.New("request body too large")
 
 func (c *Config) getM3U(ctx *gin.Context) {
 	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
@@ -55,16 +58,21 @@ func (c *Config) reverseProxy(ctx *gin.Context) {
 		return
 	} else if c.relayManager != nil {
 		c.logRelayBypass(ctx, bypassReason)
-		c.relayManager.RecordBypass(bypassReason, c.track, ctx.Request.Header)
+		c.relayManager.RecordBypass(bypassReason, c.track)
 	}
 
 	c.stream(ctx, rpURL)
 }
 
 func (c *Config) m3u8ReverseProxy(ctx *gin.Context) {
-	id := ctx.Param("id")
+	id := strings.TrimPrefix(ctx.Param("id"), "/")
+	rawURL, err := replaceTrackPathBase(c.track.URI, id)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
+		return
+	}
 
-	rpURL, err := url.Parse(strings.ReplaceAll(c.track.URI, path.Base(c.track.URI), id))
+	rpURL, err := url.Parse(rawURL)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
 		return
@@ -273,8 +281,12 @@ func (c *Config) authenticate(ctx *gin.Context) {
 func (c *Config) appAuthenticate(ctx *gin.Context) {
 	utils.DebugLog("-> Incoming URL: %s", ctx.Request.URL) // Or use c.Request.URL.Path for exact request path
 
-	contents, err := ioutil.ReadAll(ctx.Request.Body)
+	contents, err := readLimitedRequestBody(ctx.Request.Body, maxFormBodyBytes)
 	if err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			ctx.AbortWithStatus(http.StatusRequestEntityTooLarge)
+			return
+		}
 		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
 		return
 	}
@@ -293,5 +305,41 @@ func (c *Config) appAuthenticate(ctx *gin.Context) {
 		ctx.AbortWithStatus(http.StatusUnauthorized)
 	}
 
-	ctx.Request.Body = ioutil.NopCloser(bytes.NewReader(contents))
+	ctx.Request.Body = io.NopCloser(bytes.NewReader(contents))
+}
+
+func replaceTrackPathBase(rawURI, newBase string) (string, error) {
+	parsedURI, err := url.Parse(rawURI)
+	if err != nil {
+		return "", err
+	}
+
+	currentBase := path.Base(parsedURI.Path)
+	if currentBase == "." || currentBase == "/" || currentBase == "" {
+		return "", fmt.Errorf("unable to replace path base for uri %q", rawURI)
+	}
+
+	dir, _ := path.Split(parsedURI.Path)
+	parsedURI.Path = dir + newBase
+	parsedURI.RawPath = ""
+
+	return parsedURI.String(), nil
+}
+
+func readLimitedRequestBody(reader io.ReadCloser, maxBytes int64) ([]byte, error) {
+	if reader == nil {
+		return nil, nil
+	}
+
+	defer reader.Close()
+	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+
+	if int64(len(body)) > maxBytes {
+		return nil, errRequestBodyTooLarge
+	}
+
+	return body, nil
 }

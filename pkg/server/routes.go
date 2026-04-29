@@ -20,7 +20,10 @@ package server
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -74,19 +77,63 @@ func (c *Config) m3uRoutes(r *gin.RouterGroup) {
 	r.GET("/"+c.M3UFileName, c.authenticate, c.getM3U)
 	// XXX Private need: for external Android app
 	r.POST("/"+c.M3UFileName, c.authenticate, c.getM3U)
+	r.GET(fmt.Sprintf("/%s/%s/%s/:track/*id", c.endpointAntiColision, c.User, c.Password), c.m3uTrackProxy)
+}
 
-	for i, track := range c.playlist.Tracks {
-		trackConfig := &Config{
-			ProxyConfig:          c.ProxyConfig,
-			relayManager:         c.relayManager,
-			track:                &c.playlist.Tracks[i],
-			endpointAntiColision: c.endpointAntiColision,
-		}
-
-		if strings.HasSuffix(track.URI, ".m3u8") {
-			r.GET(fmt.Sprintf("/%s/%s/%s/%d/:id", c.endpointAntiColision, c.User, c.Password, i), trackConfig.m3u8ReverseProxy)
-		} else {
-			r.GET(fmt.Sprintf("/%s/%s/%s/%d/%s", c.endpointAntiColision, c.User, c.Password, i, path.Base(track.URI)), trackConfig.reverseProxy)
-		}
+func (c *Config) m3uTrackProxy(ctx *gin.Context) {
+	trackIndex, err := strconv.Atoi(ctx.Param("track"))
+	if err != nil || trackIndex < 0 || trackIndex >= len(c.playlist.Tracks) {
+		ctx.AbortWithStatus(http.StatusNotFound)
+		return
 	}
+
+	track := &c.playlist.Tracks[trackIndex]
+	trackConfig := &Config{
+		ProxyConfig:          c.ProxyConfig,
+		relayManager:         c.relayManager,
+		track:                track,
+		endpointAntiColision: c.endpointAntiColision,
+	}
+
+	requestID := strings.TrimPrefix(ctx.Param("id"), "/")
+	if requestID == "" {
+		ctx.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	if trackHasHLSExtension(track.URI) {
+		trackConfig.m3u8ReverseProxy(ctx)
+		return
+	}
+
+	expectedBase, err := trackPathBase(track.URI)
+	if err != nil || requestID != expectedBase {
+		ctx.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	trackConfig.reverseProxy(ctx)
+}
+
+func trackHasHLSExtension(rawURI string) bool {
+	parsedURI, err := url.Parse(rawURI)
+	if err != nil {
+		return false
+	}
+
+	return strings.EqualFold(path.Ext(parsedURI.Path), ".m3u8")
+}
+
+func trackPathBase(rawURI string) (string, error) {
+	parsedURI, err := url.Parse(rawURI)
+	if err != nil {
+		return "", err
+	}
+
+	base := path.Base(parsedURI.Path)
+	if base == "." || base == "/" || base == "" {
+		return "", fmt.Errorf("missing path base in uri %q", rawURI)
+	}
+
+	return base, nil
 }

@@ -225,7 +225,7 @@ func (m *RelayManager) RecordHit() {
 	m.statsMu.Unlock()
 }
 
-func (m *RelayManager) RecordBypass(reason relayBypassReason, track *m3u.Track, requestHeader http.Header) {
+func (m *RelayManager) RecordBypass(reason relayBypassReason, track *m3u.Track) {
 	if reason == relayBypassNone {
 		return
 	}
@@ -515,9 +515,4 @@ func relayEligibility(track *m3u.Track, requestHeader http.Header) (bool, relayB
 	default:
 		return false, relayBypassIneligibleExt
 	}
-}
-
-func isRelayEligibleTrack(track *m3u.Track, requestHeader http.Header) bool {
-	eligible, _ := relayEligibility(track, requestHeader)
-	return eligible
 }
