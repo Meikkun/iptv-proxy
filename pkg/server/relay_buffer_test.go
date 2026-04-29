@@ -84,3 +84,35 @@ func TestRelayBufferStartSeqForDelayIsInitialJoinOffset(t *testing.T) {
 		t.Fatalf("startSeqForDelay(0) = %d, want 4", got)
 	}
 }
+
+func TestRelayBufferCompactsAfterManyTrims(t *testing.T) {
+	// Small buffer that will trim frequently
+	buffer := newRelayBuffer(time.Minute, 10)
+	now := time.Unix(1700000000, 0)
+
+	// Add many chunks to trigger multiple trims and compaction
+	for i := 0; i < 100; i++ {
+		buffer.append(now.Add(time.Duration(i)*time.Millisecond), []byte("data"))
+	}
+
+	// After many trims, buffer should have compacted
+	// trimCount should be reset to 0 after compaction
+	if buffer.trimCount > len(buffer.chunks) {
+		t.Fatalf("buffer.trimCount = %d, should be <= len(chunks) = %d after compaction",
+			buffer.trimCount, len(buffer.chunks))
+	}
+
+	// Buffer should still function correctly
+	if !buffer.hasData() {
+		t.Fatal("buffer.hasData() = false after compaction")
+	}
+
+	// Verify we can still read chunks
+	chunk, ok := buffer.chunkAtOrAfter(buffer.chunks[0].seq)
+	if !ok {
+		t.Fatal("buffer.chunkAtOrAfter() = false after compaction")
+	}
+	if string(chunk.data) != "data" {
+		t.Fatalf("chunk.data = %q, want %q", string(chunk.data), "data")
+	}
+}

@@ -159,7 +159,14 @@ func (m *RelayManager) GetOrCreate(rawURL *url.URL, requestHeader http.Header, t
 	defer m.mu.Unlock()
 
 	if session, ok := m.sessions[key]; ok {
-		return session
+		// Check if session is being closed; if so, remove and create new
+		session.mu.Lock()
+		closed := session.closed
+		session.mu.Unlock()
+		if !closed {
+			return session
+		}
+		delete(m.sessions, key)
 	}
 
 	session := newRelaySession(
@@ -495,12 +502,13 @@ func relayEligibility(track *m3u.Track, requestHeader http.Header) (bool, relayB
 		return false, relayBypassHLS
 	}
 
-	extIndex := strings.LastIndex(strings.SplitN(strings.SplitN(lowerURI, "?", 2)[0], "#", 2)[0], ".")
+	pathOnly := strings.SplitN(strings.SplitN(lowerURI, "?", 2)[0], "#", 2)[0]
+	extIndex := strings.LastIndex(pathOnly, ".")
 	if extIndex == -1 {
 		return false, relayBypassIneligibleExt
 	}
 
-	ext := lowerURI[extIndex:]
+	ext := pathOnly[extIndex:]
 	switch ext {
 	case ".ts", ".mpegts", ".mts", ".m2ts":
 		return true, relayBypassNone

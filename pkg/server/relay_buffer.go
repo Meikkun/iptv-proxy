@@ -17,6 +17,7 @@ type relayBuffer struct {
 	maxAge     time.Duration
 	maxBytes   int
 	totalBytes int
+	trimCount  int // tracks trims since last compaction
 }
 
 func newRelayBuffer(maxAge time.Duration, maxBytes int) relayBuffer {
@@ -45,15 +46,28 @@ func (b *relayBuffer) append(now time.Time, data []byte) {
 }
 
 func (b *relayBuffer) trim(now time.Time) {
+	trimmed := 0
 	for len(b.chunks) > 1 {
 		tooOld := b.maxAge > 0 && now.Sub(b.chunks[0].receivedAt) > b.maxAge
 		tooLarge := b.maxBytes > 0 && b.totalBytes > b.maxBytes
 		if !tooOld && !tooLarge {
-			return
+			break
 		}
 
 		b.totalBytes -= len(b.chunks[0].data)
 		b.chunks = b.chunks[1:]
+		trimmed++
+	}
+
+	if trimmed > 0 {
+		b.trimCount += trimmed
+		// Compact when we've trimmed more than current size to reclaim backing array memory
+		if b.trimCount > len(b.chunks) && len(b.chunks) > 0 {
+			compacted := make([]relayChunk, len(b.chunks))
+			copy(compacted, b.chunks)
+			b.chunks = compacted
+			b.trimCount = 0
+		}
 	}
 }
 

@@ -145,10 +145,6 @@ func (c *Config) relayStream(ctx *gin.Context, oriURL *url.URL) {
 			return
 		}
 
-		if len(chunk) == 0 {
-			continue
-		}
-
 		if _, err := ctx.Writer.Write(chunk); err != nil {
 			c.logRelaySubscriberEnd(session, ctx, "downstream_write", err)
 			return

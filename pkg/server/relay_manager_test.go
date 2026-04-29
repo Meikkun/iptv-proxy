@@ -53,6 +53,8 @@ func TestRelayEligibilityReasons(t *testing.T) {
 		{name: "ineligible ext", track: &m3u.Track{URI: "http://provider/channel"}, headers: http.Header{}, wantOK: false, wantReason: relayBypassIneligibleExt},
 		{name: "eligible ts", track: &m3u.Track{URI: "http://provider/channel.ts"}, headers: http.Header{}, wantOK: true, wantReason: relayBypassNone},
 		{name: "vod positive duration", track: &m3u.Track{URI: "http://provider/movie.ts", Length: 3600}, headers: http.Header{}, wantOK: false, wantReason: relayBypassVOD},
+		{name: "ts with query string", track: &m3u.Track{URI: "http://provider/channel.ts?token=abc"}, headers: http.Header{}, wantOK: true, wantReason: relayBypassNone},
+		{name: "ts with query and fragment", track: &m3u.Track{URI: "http://provider/channel.ts?token=abc#start"}, headers: http.Header{}, wantOK: true, wantReason: relayBypassNone},
 	}
 
 	for _, tc := range tests {

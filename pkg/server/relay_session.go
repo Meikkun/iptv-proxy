@@ -34,7 +34,6 @@ type RelaySession struct {
 	ready           bool
 	hasSuccess      bool
 	lastError       error
-	lastErrorText   string
 	subscribers     int
 	peakSubscribers int
 	upstreamBytes   int64
@@ -153,6 +152,10 @@ func (s *RelaySession) streamOnce() (bool, error) {
 		}
 
 		if readErr == nil {
+			// Check if session context was cancelled between reads
+			if err := s.ctx.Err(); err != nil {
+				return hadData, err
+			}
 			continue
 		}
 
@@ -160,7 +163,7 @@ func (s *RelaySession) streamOnce() (bool, error) {
 			if hadData {
 				// Clean EOF after receiving data: likely a finite stream.
 				// Let the caller decide whether to reconnect or close.
-				s.recordError(readErr)
+				s.recordCleanEOF(readErr)
 				return hadData, readErr
 			}
 			readErr = io.ErrUnexpectedEOF
@@ -249,6 +252,8 @@ func (s *RelaySession) Subscribe(ctx context.Context) (*relayStart, error) {
 				return start, nil
 			}
 
+			lastErr = s.lastError
+			hasSuccess = s.hasSuccess
 			s.mu.Unlock()
 			if lastErr != nil && !hasSuccess {
 				return nil, lastErr
@@ -316,7 +321,6 @@ func (s *RelaySession) recordReady(statusCode int, header http.Header) {
 	s.statusCode = statusCode
 	s.responseHeader = cloneHTTPHeader(header)
 	s.lastError = nil
-	s.lastErrorText = ""
 	if s.readyAt.IsZero() {
 		s.readyAt = time.Now()
 	}
@@ -345,9 +349,21 @@ func (s *RelaySession) recordError(err error) {
 	}
 
 	s.lastError = err
-	s.lastErrorText = sanitizeRelayError(err)
 	s.broadcastLocked()
 	s.manager.recordUpstreamFailure()
+}
+
+func (s *RelaySession) recordCleanEOF(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return
+	}
+
+	s.lastError = err
+	s.broadcastLocked()
+	// Note: does not call recordUpstreamFailure() since clean EOF is not a failure
 }
 
 func (s *RelaySession) nextChunk(ctx context.Context, nextSeq uint64) (relayChunk, error) {
@@ -517,6 +533,12 @@ func (s *RelaySession) summarySnapshot() relaySessionSummary {
 		bufferBytes: s.buffer.bytes(),
 		coverage:    s.buffer.coverage(),
 	}
+}
+
+func (s *RelaySession) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 func sanitizeRelayError(err error) string {

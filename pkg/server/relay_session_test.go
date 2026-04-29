@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -416,4 +417,107 @@ func TestRelaySessionSlowSubscriberUnderrun(t *testing.T) {
 	if !strings.Contains(err.Error(), "underrun") {
 		t.Fatalf("expected underrun in error, got %q", err.Error())
 	}
+}
+
+func TestRelaySessionCleanEOFDoesNotCountAsFailure(t *testing.T) {
+	manager := &RelayManager{
+		bufferDuration: 10 * time.Second,
+		targetDelay:    0,
+		idleTimeout:    time.Second,
+		reconnectDelay: 10 * time.Millisecond,
+		reconnectMax:   10 * time.Millisecond,
+		maxBufferBytes: 1024,
+		sessions:       make(map[string]*RelaySession),
+	}
+
+	// Opener returns data then EOF (simulates finite stream)
+	opener := func(ctx context.Context) (*relayUpstreamResponse, error) {
+		return &relayUpstreamResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"video/mp2t"}},
+			Body:       io.NopCloser(strings.NewReader("stream-data")),
+		}, nil
+	}
+
+	session := newRelaySession(manager, "channel", "session-eof", "channel", "provider.example", opener)
+	go session.run()
+	defer session.close()
+
+	// Wait for session to process the data and hit EOF
+	time.Sleep(50 * time.Millisecond)
+
+	// Check that upstreamFailures was not incremented
+	manager.statsMu.Lock()
+	failures := manager.stats.upstreamFailures
+	manager.statsMu.Unlock()
+
+	if failures != 0 {
+		t.Fatalf("upstreamFailures = %d, want 0 (clean EOF should not count as failure)", failures)
+	}
+}
+
+func TestRelayGetOrCreateRecoversFromClosedSession(t *testing.T) {
+	manager := &RelayManager{
+		bufferDuration: 10 * time.Second,
+		targetDelay:    0,
+		idleTimeout:    0, // immediate idle removal
+		reconnectDelay: 10 * time.Millisecond,
+		reconnectMax:   10 * time.Millisecond,
+		maxBufferBytes: 1024,
+		sessions:       make(map[string]*RelaySession),
+	}
+
+	reader, writer := io.Pipe()
+	opener := func(ctx context.Context) (*relayUpstreamResponse, error) {
+		return &relayUpstreamResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"video/mp2t"}},
+			Body:       reader,
+		}, nil
+	}
+
+	// Manually create and register a session
+	session := newRelaySession(manager, "test-key", "session-x", "channel", "provider.example", opener)
+	manager.mu.Lock()
+	manager.sessions["test-key"] = session
+	manager.mu.Unlock()
+	go session.run()
+
+	// Write some data so Subscribe works
+	if _, err := writer.Write([]byte("data")); err != nil {
+		t.Fatalf("writer.Write() error = %v", err)
+	}
+
+	// Subscribe and immediately close to trigger idle removal
+	start, err := session.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("session.Subscribe() error = %v", err)
+	}
+	start.Subscription.Close()
+
+	// Wait for idle removal goroutine to close the session
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify session is closed
+	if !session.isClosed() {
+		t.Fatal("session should be closed after idle timeout")
+	}
+
+	// Now GetOrCreate should detect closed session and create new one
+	// We need a valid URL for GetOrCreate
+	rawURL := &url.URL{Scheme: "http", Host: "provider.example", Path: "/channel.ts"}
+	track := &m3u.Track{Name: "Channel", URI: rawURL.String()}
+
+	// Mock the opener to return immediately for new session
+	newSession := manager.GetOrCreate(rawURL, http.Header{}, track)
+
+	// The new session should be different from the closed one
+	if newSession == session {
+		t.Fatal("GetOrCreate should have created a new session, not returned the closed one")
+	}
+
+	// Cleanup
+	writer.Close()
+	session.close()
+	newSession.close()
 }
