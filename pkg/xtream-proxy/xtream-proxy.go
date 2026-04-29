@@ -209,6 +209,10 @@ func (c *Client) Action(config *config.ProxyConfig, action string, q url.Values)
 		}
 	}
 
+	if err != nil && httpcode == 0 {
+		httpcode = http.StatusInternalServerError
+	}
+
 	return
 }
 

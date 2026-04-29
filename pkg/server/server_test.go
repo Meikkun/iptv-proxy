@@ -111,3 +111,14 @@ func TestReplaceURLPreservesXtreamCredentialSwapWithoutDefaultHTTPSPort(t *testi
 		t.Fatalf("replaceURL() = %q, want %q", got, wantURL.String())
 	}
 }
+
+func TestTrackPathBaseStripsQueryString(t *testing.T) {
+	base, err := trackPathBase("http://provider.example/live/stream.ts?token=abc")
+	if err != nil {
+		t.Fatalf("trackPathBase() error = %v", err)
+	}
+
+	if base != "stream.ts" {
+		t.Fatalf("trackPathBase() = %q, want %q", base, "stream.ts")
+	}
+}

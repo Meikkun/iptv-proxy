@@ -249,3 +249,46 @@ func TestNewServerAppliesGroupFilteringAndRetainsAvailableGroups(t *testing.T) {
 		t.Fatalf("NewServer() filtered tracks = %v, want %v", gotNames, wantNames)
 	}
 }
+
+func TestParsePlaylistSupportsBOMAndLeadingWhitespaceHeader(t *testing.T) {
+	content := "\uFEFF   #EXTM3U\n#EXTINF:   -1    tvg-id=\"id-1\", Channel One\nhttp://provider.example/one.ts\n"
+
+	playlist, err := parsePlaylist(strings.NewReader(content))
+	if err != nil {
+		t.Fatalf("parsePlaylist() error = %v", err)
+	}
+
+	if len(playlist.Tracks) != 1 {
+		t.Fatalf("parsePlaylist() tracks = %d, want 1", len(playlist.Tracks))
+	}
+
+	if playlist.Tracks[0].Length != -1 {
+		t.Fatalf("track length = %d, want -1", playlist.Tracks[0].Length)
+	}
+}
+
+func TestParseTrackMetadataHandlesExtraWhitespace(t *testing.T) {
+	track, err := parseTrackMetadata("#EXTINF:   -1    tvg-id=\"id-2\"   ,  Channel Two")
+	if err != nil {
+		t.Fatalf("parseTrackMetadata() error = %v", err)
+	}
+
+	if track.Length != -1 {
+		t.Fatalf("parseTrackMetadata() length = %d, want -1", track.Length)
+	}
+
+	if track.Name != "Channel Two" {
+		t.Fatalf("parseTrackMetadata() name = %q, want %q", track.Name, "Channel Two")
+	}
+}
+
+func TestParsePlaylistFailsWhenTrackURIIsMissing(t *testing.T) {
+	_, err := parsePlaylist(strings.NewReader("#EXTM3U\n#EXTINF:-1,No URI\n"))
+	if err == nil {
+		t.Fatal("parsePlaylist() error = nil, want non-nil")
+	}
+
+	if !strings.Contains(err.Error(), "missing uri for track") {
+		t.Fatalf("parsePlaylist() error = %q, want missing uri error", err.Error())
+	}
+}

@@ -33,21 +33,25 @@ func getErrorDetailLevel() ErrorDetailLevel {
 	}
 }
 
-// formatError formats the error based on the detail level
-func formatError(err error) error {
+// formatError formats the error based on the detail level.
+// callerSkip=1 reports the caller of the wrapper that invoked formatError.
+func formatError(err error, callerSkip int) error {
 	if err == nil {
 		return nil
 	}
 
 	// Get the caller information
-	pc, file, line, ok := runtime.Caller(1)
+	pc, file, line, ok := runtime.Caller(callerSkip + 1)
 	if !ok {
 		return fmt.Errorf("error occurred: %v", err)
 	}
 
 	// Get function name
 	fn := runtime.FuncForPC(pc)
-	fnName := fn.Name()
+	fnName := "unknown"
+	if fn != nil {
+		fnName = fn.Name()
+	}
 
 	// Only return full error if specifically requested
 	if getErrorDetailLevel() == ErrorDetailFull {
@@ -88,7 +92,7 @@ func ErrorWithLocation(err error) error {
 	if err == nil {
 		return nil
 	}
-	return formatError(err)
+	return formatError(err, 1)
 }
 
 // PrintErrorAndReturn prints the error to stderr (if detail level is not None) and returns it
@@ -97,7 +101,7 @@ func PrintErrorAndReturn(err error) error {
 		return nil
 	}
 
-	wrappedErr := formatError(err)
+	wrappedErr := formatError(err, 1)
 
 	// Only print to console if detail level is not None
 	if getErrorDetailLevel() != ErrorDetailNone {

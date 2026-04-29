@@ -38,9 +38,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var defaultProxyfiedM3UPath = filepath.Join(os.TempDir(), uuid.NewV4().String()+".iptv-proxy.m3u")
-var endpointAntiColision = strings.Split(uuid.NewV4().String(), "-")[0]
-
 // Config represent the server configuration
 type Config struct {
 	*config.ProxyConfig
@@ -71,17 +68,19 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 		return nil, err
 	}
 
+	proxyfiedM3UPath := filepath.Join(os.TempDir(), uuid.NewV4().String()+".iptv-proxy.m3u")
+	endpointAntiColision := strings.Split(uuid.NewV4().String(), "-")[0]
 	if trimmedCustomId := strings.Trim(config.CustomId, "/"); trimmedCustomId != "" {
 		endpointAntiColision = trimmedCustomId
 	}
 
 	return &Config{
-		config,
-		&p,
-		availableGroups,
-		nil,
-		defaultProxyfiedM3UPath,
-		endpointAntiColision,
+		ProxyConfig:          config,
+		playlist:             &p,
+		availableGroups:      availableGroups,
+		track:                nil,
+		proxyfiedM3UPath:     proxyfiedM3UPath,
+		endpointAntiColision: endpointAntiColision,
 	}, nil
 }
 

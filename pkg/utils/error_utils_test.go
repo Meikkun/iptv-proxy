@@ -76,7 +76,7 @@ func TestErrorWithLocation(t *testing.T) {
 			err:         errors.New("test error"),
 			detailLevel: "simple",
 			expectedParts: []string{
-				"error_utils.go",
+				"error_utils_test.go",
 				"test error",
 			},
 			unexpectedParts: []string{
@@ -91,7 +91,7 @@ func TestErrorWithLocation(t *testing.T) {
 			expectedParts: []string{
 				"Error Location:",
 				"Full Path:",
-				"File: error_utils.go",
+				"File: error_utils_test.go",
 				"Line:",
 				"Function:",
 				"Error Details:",
@@ -104,7 +104,7 @@ func TestErrorWithLocation(t *testing.T) {
 			err:         errors.New("test error"),
 			detailLevel: "none",
 			expectedParts: []string{
-				"error_utils.go",
+				"error_utils_test.go",
 				"test error",
 			},
 			unexpectedParts: []string{
