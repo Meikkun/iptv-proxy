@@ -293,3 +293,44 @@ func readCachedJSON(filename string) ([]byte, error) {
 	filepath := filepath.Join(cacheDir, filename)
 	return os.ReadFile(filepath)
 }
+
+func TestProcessResponseEdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   interface{}
+		wantNil bool
+	}{
+		{
+			name:    "nil input returns nil",
+			input:   nil,
+			wantNil: true,
+		},
+		{
+			name:  "string input returned as-is",
+			input: "hello",
+		},
+		{
+			name:  "int input returned as-is",
+			input: 42,
+		},
+		{
+			name:  "empty slice returned as-is",
+			input: []xtream.Category{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ProcessResponse(tt.input)
+			if tt.wantNil {
+				if result != nil {
+					t.Errorf("Expected nil, got %v", result)
+				}
+				return
+			}
+			if result == nil {
+				t.Error("Expected non-nil result")
+			}
+		})
+	}
+}

@@ -53,6 +53,7 @@ type hlsRedirectMeta struct {
 }
 
 const hlsRedirectTTL = 10 * time.Minute
+const maxHLSManifestBytes = 10 << 20
 
 var hlsChannelsRedirectURL map[string]hlsRedirectMeta = map[string]hlsRedirectMeta{}
 var hlsChannelsRedirectURLLock = sync.RWMutex{}
@@ -66,6 +67,13 @@ func (c *Config) cacheXtreamM3u(playlist *m3u.Playlist, cacheName string) error 
 	xtreamM3uCacheLock.Lock()
 	defer xtreamM3uCacheLock.Unlock()
 
+	// Clean up the old cached file if one exists for this key
+	if old, exists := xtreamM3uCache[cacheName]; exists {
+		if old.path != "" {
+			os.Remove(old.path)
+		}
+	}
+
 	tmp := *c
 	tmp.playlist = playlist
 
@@ -78,12 +86,6 @@ func (c *Config) cacheXtreamM3u(playlist *m3u.Playlist, cacheName string) error 
 
 	if err := tmp.marshallInto(f, true); err != nil {
 		return err
-	}
-
-	if existing, ok := xtreamM3uCache[cacheName]; ok && existing.path != "" && existing.path != playlistPath {
-		if removeErr := os.Remove(existing.path); removeErr != nil && !os.IsNotExist(removeErr) {
-			utils.DebugLog("unable to remove stale xtream cache file %q: %v", existing.path, removeErr)
-		}
 	}
 
 	xtreamM3uCache[cacheName] = cacheMeta{
@@ -199,17 +201,21 @@ func (c *Config) xtreamGetAuto(ctx *gin.Context) {
 }
 
 func (c *Config) xtreamGet(ctx *gin.Context) {
-	rawURL := fmt.Sprintf("%s/get.php?username=%s&password=%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword)
-
 	q := ctx.Request.URL.Query()
 
+	params := url.Values{}
+	params.Set("username", c.XtreamUser.String())
+	params.Set("password", c.XtreamPassword.String())
 	for k, v := range q {
 		if k == "username" || k == "password" {
 			continue
 		}
-
-		rawURL = fmt.Sprintf("%s&%s=%s", rawURL, k, strings.Join(v, ","))
+		for _, val := range v {
+			params.Add(k, val)
+		}
 	}
+
+	rawURL := fmt.Sprintf("%s/get.php?%s", c.XtreamBaseURL, params.Encode())
 
 	m3uURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -239,12 +245,16 @@ func (c *Config) xtreamGet(ctx *gin.Context) {
 		}
 	}
 
-	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
 	xtreamM3uCacheLock.RLock()
 	cachePath := xtreamM3uCache[cacheKey].path
 	xtreamM3uCacheLock.RUnlock()
-	ctx.Header("Content-Type", "application/octet-stream")
+	if cachePath == "" {
+		ctx.AbortWithStatus(http.StatusNotFound)
+		return
+	}
 
+	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
+	ctx.Header("Content-Type", "application/octet-stream")
 	ctx.File(cachePath)
 }
 
@@ -279,12 +289,16 @@ func (c *Config) xtreamApiGet(ctx *gin.Context) {
 		}
 	}
 
-	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
 	xtreamM3uCacheLock.RLock()
 	cachePath := xtreamM3uCache[cacheName].path
 	xtreamM3uCacheLock.RUnlock()
-	ctx.Header("Content-Type", "application/octet-stream")
+	if cachePath == "" {
+		ctx.AbortWithStatus(http.StatusNotFound)
+		return
+	}
 
+	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
+	ctx.Header("Content-Type", "application/octet-stream")
 	ctx.File(cachePath)
 
 }
@@ -346,18 +360,25 @@ func (c *Config) xtreamPlayerAPI(ctx *gin.Context, q url.Values) {
 
 // ProcessResponse processes various types of xtream-codes responses
 func ProcessResponse(resp interface{}) interface{} {
-
-	respType := reflect.TypeOf(resp)
-
-	switch {
-	case respType == nil:
+	if resp == nil {
 		return resp
-	case strings.Contains(respType.String(), "[]xtreamcodes."):
-		return processXtreamArray(resp)
-	case strings.Contains(respType.String(), "xtreamcodes."):
-		return processXtreamStruct(resp)
-	default:
 	}
+
+	v := reflect.ValueOf(resp)
+
+	// Handle slices
+	if v.Kind() == reflect.Slice {
+		if v.Len() > 0 && isXtreamCodesStruct(v.Index(0).Interface()) {
+			return processXtreamArray(resp)
+		}
+		return resp
+	}
+
+	// Handle structs and pointers to structs
+	if isXtreamCodesStruct(resp) {
+		return processXtreamStruct(resp)
+	}
+
 	return resp
 }
 
@@ -391,14 +412,17 @@ func hasFieldsField(item interface{}) bool {
 		respValue = respValue.Elem()
 	}
 
+	if respValue.Kind() != reflect.Struct {
+		return false
+	}
+
 	// Check for specific fields, e.g., "Fields"
 	fieldValue := respValue.FieldByName(xtream.StructFields)
 	return fieldValue.IsValid() && !fieldValue.IsNil()
 }
 
 func isXtreamCodesStruct(item interface{}) bool {
-	respType := reflect.TypeOf(item)
-	return respType != nil && strings.Contains(respType.String(), "xtreamcodes.") && hasFieldsField(item)
+	return item != nil && hasFieldsField(item)
 }
 
 func processXtreamStruct(item interface{}) interface{} {
@@ -597,14 +621,7 @@ func getHlsRedirectURL(c *Config, channel string) (*url.URL, error) {
 }
 
 func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
-	client := &http.Client{
-		Timeout: defaultUpstreamRequestTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	req, err := http.NewRequest("GET", oriURL.String(), nil)
+	req, err := http.NewRequestWithContext(ctx.Request.Context(), "GET", oriURL.String(), nil)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 		return
@@ -612,7 +629,7 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 
 	mergeHttpHeader(req.Header, ctx.Request.Header)
 
-	resp, err := client.Do(req)
+	resp, err := hlsStreamingHTTPClient.Do(req)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 		return
@@ -635,7 +652,7 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 			}
 			hlsChannelsRedirectURLLock.Unlock()
 
-			hlsReq, err := http.NewRequest("GET", location.String(), nil)
+			hlsReq, err := http.NewRequestWithContext(ctx.Request.Context(), "GET", location.String(), nil)
 			if err != nil {
 				ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 				return
@@ -643,14 +660,14 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 
 			mergeHttpHeader(hlsReq.Header, ctx.Request.Header)
 
-			hlsResp, err := client.Do(hlsReq)
+			hlsResp, err := hlsNoRedirectHTTPClient.Do(hlsReq)
 			if err != nil {
 				ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 				return
 			}
 			defer hlsResp.Body.Close()
 
-			b, err := io.ReadAll(hlsResp.Body)
+			b, err := io.ReadAll(io.LimitReader(hlsResp.Body, maxHLSManifestBytes))
 			if err != nil {
 				ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
 				return
@@ -667,7 +684,13 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 		return
 	}
 
+	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
+	ctx.Writer.Flush()
+	buf := make([]byte, streamingCopyBufSize)
+	if _, err := io.CopyBuffer(ctx.Writer, resp.Body, buf); err != nil {
+		utils.DebugLog("HLS stream copy error for %s: %v", oriURL.Redacted(), err)
+	}
 }
 
 func normalizeHTTPStatusForError(statusCode int, err error) int {

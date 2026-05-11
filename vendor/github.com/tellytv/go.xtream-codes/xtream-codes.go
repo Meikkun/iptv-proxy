@@ -14,8 +14,6 @@ import (
 	"strings"
 
 	"github.com/buger/jsonparser"
-	"github.com/gin-gonic/gin"
-	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/utils"
 )
 
 var defaultUserAgent = "go.xstream-codes (Go-http-client/1.1)"
@@ -25,6 +23,14 @@ var useAdvancedParsing bool
 func init() {
 	// Use advanced parsing by default, unless legacy parsing is explicitly enabled
 	useAdvancedParsing = os.Getenv("USE_XTREAM_LEGACY_PARSING") != "true"
+}
+
+// logError logs the error to stderr and returns it. Local replacement for utils.PrintErrorAndReturn.
+func logError(err error) error {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	return err
 }
 
 // XtreamClient is the client used to communicate with a Xtream-Codes server.
@@ -73,7 +79,7 @@ func NewClient(username, password, baseURL string) (*XtreamClient, error) {
 	a := &AuthenticationResponse{}
 
 	if jsonErr := json.Unmarshal(authData, &a); jsonErr != nil {
-		return nil, utils.PrintErrorAndReturn(fmt.Errorf("error unmarshaling json: %s", jsonErr.Error()))
+		return nil, logError(fmt.Errorf("error unmarshaling json: %s", jsonErr.Error()))
 	}
 
 	client.ServerInfo = a.ServerInfo
@@ -164,7 +170,7 @@ func (c *XtreamClient) GetCategories(catType string) ([]Category, error) {
 	if useAdvancedParsing {
 		_, jsonErr := jsonparser.ArrayEach(catData, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
 			if err != nil {
-				utils.PrintErrorAndReturn(err)
+				logError(err)
 				return
 			}
 
@@ -180,7 +186,7 @@ func (c *XtreamClient) GetCategories(catType string) ([]Category, error) {
 
 		jsonErr := json.Unmarshal(catData, &cats)
 		if jsonErr != nil {
-			utils.PrintErrorAndReturn(jsonErr)
+			logError(jsonErr)
 		}
 
 		for idx := range cats {
@@ -228,7 +234,7 @@ func (c *XtreamClient) GetStreams(streamAction, categoryID string) ([]Stream, er
 	if useAdvancedParsing {
 		_, jsonErr := jsonparser.ArrayEach(streamData, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
 			if err != nil {
-				utils.PrintErrorAndReturn(err)
+				logError(err)
 				return
 			}
 
@@ -269,7 +275,7 @@ func (c *XtreamClient) GetStreams(streamAction, categoryID string) ([]Stream, er
 		debugLog("- GetStreams using Legacy Parsing for: []Stream")
 
 		if jsonErr := json.Unmarshal(streamData, &streams); jsonErr != nil {
-			return nil, utils.PrintErrorAndReturn(jsonErr)
+			return nil, logError(jsonErr)
 		}
 
 		for _, stream := range streams {
@@ -299,7 +305,7 @@ func (c *XtreamClient) GetSeries(categoryID string) ([]SeriesInfo, error) {
 	if useAdvancedParsing {
 		_, jsonErr := jsonparser.ArrayEach(seriesData, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
 			if err != nil {
-				utils.PrintErrorAndReturn(err)
+				logError(err)
 				return
 			}
 
@@ -316,7 +322,7 @@ func (c *XtreamClient) GetSeries(categoryID string) ([]SeriesInfo, error) {
 
 		jsonErr := json.Unmarshal(seriesData, &seriesInfos)
 		if jsonErr != nil {
-			utils.PrintErrorAndReturn(jsonErr)
+			logError(jsonErr)
 		}
 
 		return seriesInfos, jsonErr
@@ -347,7 +353,7 @@ func (c *XtreamClient) GetSeriesInfo(seriesID string) (*Series, error) {
 
 		jsonErr := json.Unmarshal(seriesData, &seriesInfo)
 		if jsonErr != nil {
-			utils.PrintErrorAndReturn(jsonErr)
+			logError(jsonErr)
 		}
 
 		return seriesInfo, jsonErr
@@ -378,7 +384,7 @@ func (c *XtreamClient) GetVideoOnDemandInfo(vodID string) (*VideoOnDemandInfo, e
 
 		jsonErr := json.Unmarshal(vodData, &vodInfo)
 		if jsonErr != nil {
-			utils.PrintErrorAndReturn(jsonErr)
+			logError(jsonErr)
 		}
 		return vodInfo, jsonErr
 	}
@@ -423,7 +429,7 @@ func (c *XtreamClient) getEPG(action, streamID string, limit int) ([]EPGInfo, er
 
 	jsonErr := json.Unmarshal(epgData, &epgContainer)
 	if jsonErr != nil {
-		utils.PrintErrorAndReturn(jsonErr)
+		logError(jsonErr)
 	}
 
 	return epgContainer.EPGListings, jsonErr
@@ -475,17 +481,43 @@ func (c *XtreamClient) sendRequestWithURL(action string, parameters url.Values) 
 		return nil, url, fmt.Errorf("cannot read response. %v", closeErr)
 	}
 
-	// Create a mock gin.Context for the WriteResponseToFile function
-	mockCtx := &gin.Context{
-		Request: &http.Request{
-			URL: request.URL,
-		},
+	// Cache response to file if configured
+	cacheFolder := os.Getenv("CACHE_FOLDER")
+	if cacheFolder != "" {
+		contentType := strings.Split(response.Header.Get("Content-Type"), ";")[0]
+		writeResponseCache(request.URL.String(), buf.Bytes(), contentType, cacheFolder)
 	}
 
-	contentType := strings.Split(response.Header.Get("Content-Type"), ";")[0]
-
-	// Write response to file
-	utils.WriteResponseToFile(mockCtx, buf.Bytes(), contentType)
-
 	return buf.Bytes(), url, nil
+}
+
+// writeResponseCache writes the response body to a cache file.
+func writeResponseCache(requestURL string, data []byte, contentType, cacheFolder string) {
+	var extension string
+	switch contentType {
+	case "application/json":
+		extension = ".json"
+	case "application/xml", "text/xml":
+		extension = ".xml"
+	default:
+		extension = ".json"
+	}
+
+	if cacheFolder != "" && !strings.HasSuffix(cacheFolder, "/") {
+		cacheFolder += "/"
+	}
+
+	if err := os.MkdirAll(cacheFolder, 0755); err != nil {
+		debugLog("Error creating cache directory: %v", err)
+		return
+	}
+
+	filename := cacheFolder + url.QueryEscape(requestURL) + extension
+	if _, err := os.Stat(filename); err == nil {
+		return // File already exists, don't overwrite
+	}
+
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		debugLog("Error writing cache file: %v", err)
+	}
 }

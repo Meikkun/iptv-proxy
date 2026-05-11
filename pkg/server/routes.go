@@ -63,12 +63,12 @@ func (c *Config) xtreamRoutes(r *gin.RouterGroup) {
 	r.GET("/player_api.php", c.authenticate, c.xtreamPlayerAPIGET)
 	r.POST("/player_api.php", c.appAuthenticate, c.xtreamPlayerAPIPOST)
 	r.GET("/xmltv.php", c.authenticate, c.xtreamXMLTV)
-	r.GET(fmt.Sprintf("/%s/%s/:id", c.User, c.Password), c.xtreamStreamHandler)
-	r.GET(fmt.Sprintf("/live/%s/%s/:id", c.User, c.Password), c.xtreamStreamLive)
-	r.GET(fmt.Sprintf("/timeshift/%s/%s/:duration/:start/:id", c.User, c.Password), c.xtreamStreamTimeshift)
-	r.GET(fmt.Sprintf("/movie/%s/%s/:id", c.User, c.Password), c.xtreamStreamMovie)
-	r.GET(fmt.Sprintf("/series/%s/%s/:id", c.User, c.Password), c.xtreamStreamSeries)
-	r.GET(fmt.Sprintf("/hlsr/:token/%s/%s/:channel/:hash/:chunk", c.User, c.Password), c.xtreamHlsrStream)
+	r.GET(fmt.Sprintf("/%s/%s/:id", c.User.PathEscape(), c.Password.PathEscape()), c.xtreamStreamHandler)
+	r.GET(fmt.Sprintf("/live/%s/%s/:id", c.User.PathEscape(), c.Password.PathEscape()), c.xtreamStreamLive)
+	r.GET(fmt.Sprintf("/timeshift/%s/%s/:duration/:start/:id", c.User.PathEscape(), c.Password.PathEscape()), c.xtreamStreamTimeshift)
+	r.GET(fmt.Sprintf("/movie/%s/%s/:id", c.User.PathEscape(), c.Password.PathEscape()), c.xtreamStreamMovie)
+	r.GET(fmt.Sprintf("/series/%s/%s/:id", c.User.PathEscape(), c.Password.PathEscape()), c.xtreamStreamSeries)
+	r.GET(fmt.Sprintf("/hlsr/:token/%s/%s/:channel/:hash/:chunk", c.User.PathEscape(), c.Password.PathEscape()), c.xtreamHlsrStream)
 	r.GET("/hls/:token/:chunk", c.xtreamHlsStream)
 	r.GET("/play/:token/:type", c.xtreamStreamPlay)
 }
@@ -77,7 +77,7 @@ func (c *Config) m3uRoutes(r *gin.RouterGroup) {
 	r.GET("/"+c.M3UFileName, c.authenticate, c.getM3U)
 	// XXX Private need: for external Android app
 	r.POST("/"+c.M3UFileName, c.authenticate, c.getM3U)
-	r.GET(fmt.Sprintf("/%s/%s/%s/:track/*id", c.endpointAntiColision, c.User, c.Password), c.m3uTrackProxy)
+	r.GET(fmt.Sprintf("/%s/%s/%s/:track/*id", c.endpointAntiColision, c.User.PathEscape(), c.Password.PathEscape()), c.m3uTrackProxy)
 }
 
 func (c *Config) m3uTrackProxy(ctx *gin.Context) {

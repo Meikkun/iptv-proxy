@@ -76,18 +76,16 @@ var rootCmd = &cobra.Command{
 				xtreamUser = username
 				xtreamPassword = password
 				xtreamBaseURL = fmt.Sprintf("%s://%s", remoteHostURL.Scheme, remoteHostURL.Host)
-				log.Printf("[iptv-proxy] INFO: xtream service enabled with base URL %q (credentials sourced from m3u URL)", xtreamBaseURL)
-			}
+			log.Printf("[iptv-proxy] INFO: xtream service enabled with base URL %q (credentials sourced from m3u URL)", xtreamBaseURL)
 		}
+	}
 
 		config.DebugLoggingEnabled = viper.GetBool("debug-logging")
 		config.CacheFolder = viper.GetString("cache-folder")
-		if config.CacheFolder != "" {
-			// Ensure CacheFolder ends with a '/'
-			if config.CacheFolder != "" && !strings.HasSuffix(config.CacheFolder, "/") {
-				config.CacheFolder += "/"
-			}
-		}
+	// Ensure CacheFolder ends with a '/'
+	if config.CacheFolder != "" && !strings.HasSuffix(config.CacheFolder, "/") {
+		config.CacheFolder += "/"
+	}
 
 		includeGroups := getStringSliceSetting("include-group")
 

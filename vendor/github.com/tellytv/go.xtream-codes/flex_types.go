@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/utils"
 )
 
 // Timestamp is a helper struct to convert unix timestamp ints and strings to time.Time.
@@ -97,7 +95,7 @@ func (f *FlexInt) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		err = fmt.Errorf("FlexInt UnmarshalJSON error: %v (original: %s, trimmed: %s, Data type: %T, Data length: %d)",
 			err, originalData, trimmedData, data, len(data))
-		return utils.PrintErrorAndReturn(err)
+		return logError(err)
 	}
 	*f = FlexInt(v)
 	return err
@@ -106,13 +104,16 @@ func (f *FlexInt) UnmarshalJSON(data []byte) error {
 type FlexFloat float64
 
 func (ff *FlexFloat) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 {
+		return nil
+	}
 	if b[0] != '"' {
 		return json.Unmarshal(b, (*float64)(ff))
 	}
 
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
-		return utils.PrintErrorAndReturn(err)
+		return logError(err)
 	}
 
 	if len(s) == 0 {
@@ -145,6 +146,9 @@ func (b JSONStringSlice) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON sets *b to a copy of data.
 func (b *JSONStringSlice) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
 	if data[0] == '"' {
 		data = append([]byte(`[`), data...)
 		data = append(data, []byte(`]`)...)

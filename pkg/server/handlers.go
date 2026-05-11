@@ -20,6 +20,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -36,6 +37,20 @@ import (
 const maxFormBodyBytes = 1 << 20
 
 var errRequestBodyTooLarge = errors.New("request body too large")
+
+// hopByHopHeaders lists HTTP headers that must not be forwarded by a proxy.
+// See RFC 7230 Section 6.1.
+var hopByHopHeaders = map[string]struct{}{
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Proxy-Connection":    {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
 
 func (c *Config) getM3U(ctx *gin.Context) {
 	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
@@ -72,9 +87,7 @@ func (c *Config) m3u8ReverseProxy(ctx *gin.Context) {
 }
 
 func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
-	utils.DebugLog("-> Incoming URL: %s", ctx.Request.URL) // Or use c.Request.URL.Path for exact request path
-
-	client := newStreamingHTTPClient()
+	utils.DebugLog("-> Incoming URL: %s", ctx.Request.URL)
 
 	req, err := http.NewRequestWithContext(ctx.Request.Context(), "GET", oriURL.String(), nil)
 	if err != nil {
@@ -84,7 +97,7 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 
 	mergeHttpHeader(req.Header, ctx.Request.Header)
 
-	resp, err := client.Do(req)
+	resp, err := streamingHTTPClient.Do(req)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
 		return
@@ -93,10 +106,11 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 
 	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
-	ctx.Stream(func(w io.Writer) bool {
-		io.Copy(w, resp.Body) // nolint: errcheck
-		return false
-	})
+	ctx.Writer.Flush()
+	buf := make([]byte, streamingCopyBufSize)
+	if _, err := io.CopyBuffer(ctx.Writer, resp.Body, buf); err != nil {
+		utils.DebugLog("stream copy error for %s: %v", oriURL.Redacted(), err)
+	}
 }
 
 func (c *Config) xtreamStream(ctx *gin.Context, oriURL *url.URL) {
@@ -123,6 +137,9 @@ func (vs values) contains(s string) bool {
 
 func mergeHttpHeader(dst, src http.Header) {
 	for k, vv := range src {
+		if _, skip := hopByHopHeaders[http.CanonicalHeaderKey(k)]; skip {
+			continue
+		}
 		for _, v := range vv {
 			if values(dst.Values(k)).contains(v) {
 				continue
@@ -148,6 +165,7 @@ func (c *Config) authenticate(ctx *gin.Context) {
 	}
 	if c.ProxyConfig.User.String() != authReq.Username || c.ProxyConfig.Password.String() != authReq.Password {
 		ctx.AbortWithStatus(http.StatusUnauthorized)
+		return
 	}
 }
 
@@ -176,6 +194,7 @@ func (c *Config) appAuthenticate(ctx *gin.Context) {
 	log.Printf("[iptv-proxy] %v | %s |App Auth\n", time.Now().Format("2006/01/02 - 15:04:05"), ctx.ClientIP())
 	if c.ProxyConfig.User.String() != q["username"][0] || c.ProxyConfig.Password.String() != q["password"][0] {
 		ctx.AbortWithStatus(http.StatusUnauthorized)
+		return
 	}
 
 	ctx.Request.Body = io.NopCloser(bytes.NewReader(contents))

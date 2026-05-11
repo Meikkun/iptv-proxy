@@ -61,7 +61,7 @@ func loadPlaylistSource(source string) (m3u.Playlist, error) {
 
 func openPlaylistSource(source string) (io.ReadCloser, error) {
 	if isRemotePlaylistSource(source) {
-		resp, err := newUpstreamHTTPClient().Get(source)
+		resp, err := upstreamHTTPClient.Get(source)
 		if err != nil {
 			return nil, fmt.Errorf("unable to open playlist URL %q: %w", source, err)
 		}

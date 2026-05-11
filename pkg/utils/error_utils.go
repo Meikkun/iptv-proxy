@@ -20,8 +20,14 @@ const (
 	ErrorDetailFull
 )
 
-// getErrorDetailLevel returns the configured error detail level from environment
-func getErrorDetailLevel() ErrorDetailLevel {
+var currentErrorDetailLevel ErrorDetailLevel
+
+func init() {
+	currentErrorDetailLevel = readErrorDetailLevel()
+}
+
+// readErrorDetailLevel reads the error detail level from the environment variable.
+func readErrorDetailLevel() ErrorDetailLevel {
 	level := strings.ToLower(os.Getenv("ERROR_DETAIL_LEVEL"))
 	switch level {
 	case "none":
@@ -29,8 +35,18 @@ func getErrorDetailLevel() ErrorDetailLevel {
 	case "full":
 		return ErrorDetailFull
 	default:
-		return ErrorDetailSimple // Default to simple error output
+		return ErrorDetailSimple
 	}
+}
+
+// getErrorDetailLevel returns the cached error detail level.
+func getErrorDetailLevel() ErrorDetailLevel {
+	return currentErrorDetailLevel
+}
+
+// SetErrorDetailLevel updates the cached error detail level. Intended for testing.
+func SetErrorDetailLevel(level ErrorDetailLevel) {
+	currentErrorDetailLevel = level
 }
 
 // formatError formats the error based on the detail level.

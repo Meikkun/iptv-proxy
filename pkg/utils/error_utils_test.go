@@ -44,6 +44,7 @@ func TestGetErrorDetailLevel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Setenv("ERROR_DETAIL_LEVEL", tt.envValue)
+			currentErrorDetailLevel = readErrorDetailLevel()
 			defer os.Unsetenv("ERROR_DETAIL_LEVEL")
 
 			if got := getErrorDetailLevel(); got != tt.expectedLevel {
@@ -117,6 +118,7 @@ func TestErrorWithLocation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Setenv("ERROR_DETAIL_LEVEL", tt.detailLevel)
+			currentErrorDetailLevel = readErrorDetailLevel()
 			defer os.Unsetenv("ERROR_DETAIL_LEVEL")
 
 			got := ErrorWithLocation(tt.err)
@@ -183,6 +185,7 @@ func TestPrintErrorAndReturn(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Setenv("ERROR_DETAIL_LEVEL", tt.detailLevel)
+			currentErrorDetailLevel = readErrorDetailLevel()
 			defer os.Unsetenv("ERROR_DETAIL_LEVEL")
 
 			// Redirect stderr to capture output
@@ -240,18 +243,43 @@ func logErrorFormatsExample(t *testing.T) {
 
 	// Show Simple format (default)
 	os.Setenv("ERROR_DETAIL_LEVEL", "simple")
+	currentErrorDetailLevel = readErrorDetailLevel()
 	simpleErr := ErrorWithLocation(originalErr)
 	t.Logf("\n>>> Simple format (default):\n%v\n\n", simpleErr)
 
 	// Show Full format
 	os.Setenv("ERROR_DETAIL_LEVEL", "full")
+	currentErrorDetailLevel = readErrorDetailLevel()
 	fullErr := ErrorWithLocation(originalErr)
 	t.Logf("\n>>> Full format:\n%v\n\n", fullErr)
 
 	// Show None format
 	os.Setenv("ERROR_DETAIL_LEVEL", "none")
+	currentErrorDetailLevel = readErrorDetailLevel()
 	noneErr := ErrorWithLocation(originalErr)
 	t.Logf("\n>>> None format:\n%v\n\n", noneErr)
 
 	t.Log("\n" + strings.Repeat("=", 80) + "\n")
+}
+
+func TestFormatErrorReportsCallerLocation(t *testing.T) {
+	os.Setenv("ERROR_DETAIL_LEVEL", "simple")
+	currentErrorDetailLevel = readErrorDetailLevel()
+	defer os.Unsetenv("ERROR_DETAIL_LEVEL")
+
+	err := errors.New("test error")
+	wrapped := PrintErrorAndReturn(err)
+
+	if wrapped == nil {
+		t.Fatal("Expected non-nil error")
+	}
+
+	errStr := wrapped.Error()
+	// The error should report this test file, NOT error_utils.go
+	if strings.Contains(errStr, "error_utils.go") {
+		t.Errorf("Error location should report the caller, not error_utils.go. Got: %s", errStr)
+	}
+	if !strings.Contains(errStr, "error_utils_test.go") {
+		t.Errorf("Error location should contain error_utils_test.go. Got: %s", errStr)
+	}
 }

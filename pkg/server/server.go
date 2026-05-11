@@ -20,15 +20,20 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/jamesnetherton/m3u"
@@ -37,6 +42,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+const shutdownTimeout = 15 * time.Second
 
 // Config represent the server configuration
 type Config struct {
@@ -95,10 +102,37 @@ func (c *Config) Serve() error {
 	group := router.Group("/")
 	c.routes(group)
 
-	// Add a message to indicate the server is ready
-	log.Printf("[iptv-proxy] Server is ready and listening on :%d", c.HostConfig.Port)
+	srv := &http.Server{
+		Addr:    fmt.Sprintf(":%d", c.HostConfig.Port),
+		Handler: router,
+	}
 
-	return router.Run(fmt.Sprintf(":%d", c.HostConfig.Port))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("[iptv-proxy] Server is ready and listening on :%d", c.HostConfig.Port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		stop()
+		log.Printf("[iptv-proxy] Shutting down gracefully (timeout %s)...", shutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("server shutdown error: %w", err)
+		}
+		log.Printf("[iptv-proxy] Server stopped")
+		return nil
+	}
 }
 
 // Groups returns the discovered M3U group-title values before filtering.
