@@ -621,6 +621,9 @@ func getHlsRedirectURL(c *Config, channel string) (*url.URL, error) {
 }
 
 func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
+	connID := activeTracker.track(oriURL.Redacted(), ctx.ClientIP())
+	defer activeTracker.untrack(connID)
+
 	req, err := http.NewRequestWithContext(ctx.Request.Context(), "GET", oriURL.String(), nil)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, utils.PrintErrorAndReturn(err)) // nolint: errcheck
