@@ -49,6 +49,7 @@ type HostConfiguration struct {
 
 // ProxyConfig Contain original m3u playlist and HostConfiguration
 type ProxyConfig struct {
+	Playlist             *PlaylistConfig
 	Relay                *RelayConfig
 	HostConfig           *HostConfiguration
 	XtreamUser           CredentialString

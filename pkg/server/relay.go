@@ -221,6 +221,8 @@ func (m *relayManager) Close() {
 }
 
 type relayStats struct {
+	PendingStarts       int    `json:"pending_starts"`
+	PendingCleanup      int    `json:"pending_cleanup"`
 	Sessions            int    `json:"sessions"`
 	Viewers             int    `json:"viewers"`
 	Upstreams           int    `json:"upstreams"`
@@ -238,6 +240,11 @@ func (m *relayManager) stats() relayStats {
 		ExistingChannelWins: m.config.ExistingChannelWins, Substitutions: m.substitutions,
 	}
 	for _, s := range m.sessions {
+		if s.stopping {
+			stats.PendingCleanup++
+		} else if !s.started {
+			stats.PendingStarts++
+		}
 		stats.Viewers += len(s.viewers)
 		if s.upstream {
 			stats.Upstreams++

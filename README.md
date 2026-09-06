@@ -126,6 +126,124 @@ INCLUDE_GROUP='ES\|*|\|ES\|*'
 iptv-proxy --include-group 'ES\|*' --include-group '\|ES\|*'
 ```
 
+### Playlist bootstrap, refresh and stable links
+
+Metadata fetching has its own timeout; these settings do **not** change stream,
+HLS or Xtream API deadlines. CLI flags override environment variables, which
+override configuration-file/default values.
+
+| CLI flag | Environment variable | Default |
+| --- | --- | --- |
+| `--playlist-fetch-timeout` | `PLAYLIST_FETCH_TIMEOUT` | `30s` |
+| `--playlist-startup-timeout` | `PLAYLIST_STARTUP_TIMEOUT` | `0s` |
+| `--playlist-refresh-interval` | `PLAYLIST_REFRESH_INTERVAL` | `0s` |
+| `--playlist-state-dir` | `PLAYLIST_STATE_DIR` | empty (disabled) |
+| `--playlist-stable-ids` | `PLAYLIST_STABLE_IDS` | `false` |
+| `--m3u-source-ids` | `M3U_SOURCE_IDS` | unset |
+
+Fetch timeout must be positive. Startup/refresh durations must be nonnegative.
+With startup timeout `0s`, each source is attempted once. A positive timeout
+bounds the whole bootstrap: failed sources retry after 5, 10, 20, then 30 seconds,
+without downloading already-successful sources again. Each source's timeout
+also covers reading its response body and cannot exceed the remaining startup
+budget. SIGTERM/SIGINT cancel requests and retry waits.
+
+Go owns catalogue generation; a container launcher should only check local
+converter readiness, not pre-download the same playlists. Example deployment
+settings for two aligned sources:
+
+```Shell
+PLAYLIST_FETCH_TIMEOUT=180s
+PLAYLIST_STARTUP_TIMEOUT=600s
+PLAYLIST_REFRESH_INTERVAL=6h
+PLAYLIST_STATE_DIR=/var/lib/iptv-proxy
+PLAYLIST_STABLE_IDS=true
+M3U_SOURCE_IDS='primary|secondary'
+```
+
+Keep the existing `CUSTOM_ID` and relay settings. Source IDs must be nonempty,
+unique and match `[A-Za-z0-9_-]{1,64}`; stable mode requires exactly one per
+source. Source-ID changes are intentional channel-identity migrations.
+
+Filtering happens during parsing while retaining discovered group names and
+validating **every** record, including excluded records. Matching remains
+case-sensitive, with the same literal, Unicode, wildcard and escaped-pipe
+semantics. Empty/truncated/malformed source documents are rejected. A healthy
+source may have no selected groups; the merged result must still contain at
+least one selected track. This preserves existing multi-source filtering.
+
+Each accepted catalogue is an immutable generation: playlist responses and
+track lookup use its matching rendered bytes and metadata. A failed source,
+invalid candidate or persistence failure retains the entire previous generation.
+Refresh never replaces the live relay manager or disconnects existing viewers.
+The optional timer and `SIGHUP` refresh are serialized and bursts are coalesced;
+there is no public refresh endpoint. Through Supervisor, send
+`supervisorctl signal HUP iptv-proxy` over its private control socket.
+
+**Stable mode requires a one-time client playlist refresh.** Routes use
+`/<CUSTOM_ID>/<proxy-user>/<proxy-password>/s<64 lowercase hex>/<filename>`.
+Numeric positional links return **410 Gone** only in stable mode. Removed
+channels return **404** for new requests, while existing viewers can finish.
+Legacy mode keeps positional URLs. Set a fixed `CUSTOM_ID` if links must survive
+process restarts; its legacy default is a newly generated prefix.
+If refresh is explicitly enabled in legacy mode, reordered providers can still
+change what positional links mean; use stable mode for durable channel links.
+
+Recognized Xtream live/movie/series URLs with numeric provider IDs hash the
+source ID, content kind and provider ID, not list position, name, hostname or
+password. The source must represent at most one recognized account, including
+excluded records. Unknown layouts hash the source ID and full URI without its
+fragment; query tokens remain significant, so rotating those tokens can change
+links. Conflicting upstream URLs for one stable key reject the candidate.
+Automatic refresh rejects recognized account-identity changes (including
+origin/credential changes) with `account_identity_changed`, so it cannot bypass
+occupied-account protection. Planned provider/account changes require explicit
+configuration and restart coordination. Stable mode serves the configured M3U
+through the catalogue even for a single auto-detected Xtream source; optional
+Xtream API endpoints and legacy auto mode remain available.
+
+#### Private last-good metadata and status
+
+The configured state directory is private (`0700`), and `catalogue.json` is
+`0600`. It contains **credential-bearing upstream metadata**, not public rendered
+playlist bytes. Keep it outside Git, public web roots and unprotected backups.
+Use a dedicated local filesystem supporting same-directory atomic rename,
+hard links and directory fsync; do not share one state directory between proxy
+processes. State writes sync a staged file, retain a rollback link, atomically
+rename and sync the directory before publishing in memory.
+
+Startup validates schema version, source/filter/identity fingerprint, permissions
+and metadata. Source URL/password/hostname or filter changes invalidate old state;
+proxy credentials, advertised host/port and URL prefix do not: rendered output
+is regenerated from current configuration. Valid state is served immediately,
+with an asynchronous refresh. Missing state triggers bootstrap; rejected state
+logs an explicit safe reason and attempts a fresh bounded bootstrap. State
+larger than 128 MiB is not persisted or restored. Catastrophic filesystem failure that prevents
+both directory sync and rollback requires operator recovery from a private backup.
+
+`/status` adds `catalogue` with:
+
+- `ready`, `generation`, selected `count`, `last_successful_refresh`;
+- `last_refresh_error_kind` and `refreshing`;
+- `sources`: source `id`, selected `count`, validated `total_count`,
+  `last_attempt`, `last_success`, and `last_error_kind`.
+
+Source timestamps describe fetch health; the catalogue timestamp describes
+publication. Stale metadata or a refresh error does not make an otherwise usable
+catalogue unready and is not permission to restart playback. Source URLs never
+appear in status. M3U request logs whitelist method, response status, duration and
+opaque route identity, including in Gin debug mode. Wrapped direct-stream HTTP
+errors and direct connection identities do not expose upstream credentials.
+Gin's built-in diagnostic writers are disabled once at startup because redirect
+diagnostics run before middleware and include raw URLs. Redirect responses are
+unchanged; safe application logging remains enabled.
+Detailed status remains unauthenticated for local monitoring; restrict it at
+ingress rather than trusting forwarded-client headers.
+
+Validate rollout with synthetic providers first, then arrange client-link
+migration and an approved playback observation. This change makes no throughput,
+memory-reduction or uninterrupted-provider-reconnect claim.
+
 ### Shared live relay (enabled by default)
 
 Multiple viewers of the **same live MPEG-TS source** share one upstream
@@ -194,10 +312,10 @@ remain direct so connection-wide deadlines cannot interrupt unrelated streams.
 
 `/status` retains `active_connections` and `connections` as **viewer** counts
 and adds aggregate `relay` counts (`sessions`, `viewers`, `upstreams`,
-`reconnects`, `slow_disconnects`). Idle sessions can have an upstream but no
-viewers. Relay connection entries and reconnect logs use a hashed session ID,
-not credential-bearing provider URLs. Existing direct-stream status behavior
-is unchanged.
+`pending_starts`, `pending_cleanup`, `reconnects`, `slow_disconnects`). Idle
+sessions can have an upstream but no viewers. Sessions stay counted while
+starting or cleaning up; a nonzero session count is not idle. Relay and direct
+connection entries use opaque hashed identities, not credential-bearing URLs.
 
 #### Protect a one-connection account: existing channel wins
 

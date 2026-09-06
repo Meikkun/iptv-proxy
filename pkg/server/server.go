@@ -29,7 +29,6 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,27 +59,25 @@ type Config struct {
 
 	endpointAntiColision string
 	relay                *relayManager
+	catalogue            *catalogueManager
 }
 
 // NewServer initialize a new server configuration
 func NewServer(config *config.ProxyConfig) (*Config, error) {
+	return NewServerContext(context.Background(), config)
+}
+
+// NewServerContext allows shutdown to interrupt playlist bootstrap.
+func NewServerContext(ctx context.Context, config *config.ProxyConfig) (*Config, error) {
 	relayConfig := relayConfiguration(config)
 	if err := relayConfig.Validate(); err != nil {
 		return nil, err
 	}
-	p, err := loadPlaylistSources(config.M3USources)
-	if err != nil {
+	playlistConfig := playlistConfiguration(config)
+	if err := playlistConfig.Validate(config.M3USources); err != nil {
 		return nil, err
 	}
 
-	availableGroups := playlistGroups(p)
-
-	p, err = filterPlaylistByGroups(p, config.IncludeGroups)
-	if err != nil {
-		return nil, err
-	}
-
-	proxyfiedM3UPath := filepath.Join(os.TempDir(), uuid.NewV4().String()+".iptv-proxy.m3u")
 	endpointAntiColision := strings.Split(uuid.NewV4().String(), "-")[0]
 	if trimmedCustomId := strings.Trim(config.CustomId, "/"); trimmedCustomId != "" {
 		endpointAntiColision = trimmedCustomId
@@ -88,11 +85,12 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 
 	server := &Config{
 		ProxyConfig:          config,
-		playlist:             &p,
-		availableGroups:      availableGroups,
 		track:                nil,
-		proxyfiedM3UPath:     proxyfiedM3UPath,
 		endpointAntiColision: endpointAntiColision,
+		catalogue:            newCatalogueManager(playlistConfig, len(config.M3USources)),
+	}
+	if err := server.bootstrapCatalogue(ctx); err != nil {
+		return nil, err
 	}
 	if relayConfig.Enabled {
 		server.relay = newRelayManager(relayConfig, streamingHTTPClient)
@@ -102,6 +100,14 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 
 // Serve the iptv-proxy api
 func (c *Config) Serve() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return c.ServeContext(ctx)
+}
+
+func (c *Config) ServeContext(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if c.relay != nil {
 		defer c.relay.Close()
 	}
@@ -109,19 +115,31 @@ func (c *Config) Serve() error {
 		return err
 	}
 
-	router := gin.Default()
-	router.Use(cors.Default())
-	group := router.Group("/")
-	c.routes(group)
+	router := c.router()
+	if c.catalogue != nil {
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		defer signal.Stop(hup)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-hup:
+					c.RequestCatalogueRefresh()
+				}
+			}
+		}()
+		refreshDone := make(chan struct{})
+		go func() { defer close(refreshDone); c.runCatalogueRefresh(ctx) }()
+		defer func() { cancel(); <-refreshDone }()
+	}
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%d", c.HostConfig.Port),
 		Handler:     router,
 		ConnContext: relayConnContext,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -136,7 +154,6 @@ func (c *Config) Serve() error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		stop()
 		if c.relay != nil {
 			c.relay.Close()
 		}
@@ -153,6 +170,9 @@ func (c *Config) Serve() error {
 
 // Groups returns the discovered M3U group-title values before filtering.
 func (c *Config) Groups() []string {
+	if c.catalogue != nil {
+		return append([]string(nil), c.catalogue.snapshot().groups...)
+	}
 	groups := make([]string, len(c.availableGroups))
 	copy(groups, c.availableGroups)
 
@@ -160,6 +180,9 @@ func (c *Config) Groups() []string {
 }
 
 func (c *Config) playlistInitialization() error {
+	if c.catalogue != nil {
+		return nil
+	}
 	if len(c.playlist.Tracks) == 0 {
 		return nil
 	}
@@ -210,6 +233,10 @@ func (c *Config) marshallInto(into *os.File, xtream bool) error {
 
 // ReplaceURL replace original playlist url by proxy url
 func (c *Config) replaceURL(uri string, trackIndex int, xtream bool) (string, error) {
+	return c.replaceURLToken(uri, strconv.Itoa(trackIndex), xtream)
+}
+
+func (c *Config) replaceURLToken(uri, token string, xtream bool) (string, error) {
 	oriURL, err := url.Parse(uri)
 	if err != nil {
 		return "", err
@@ -230,10 +257,13 @@ func (c *Config) replaceURL(uri string, trackIndex int, xtream bool) (string, er
 		uriPath = strings.ReplaceAll(uriPath, c.XtreamUser.PathEscape(), c.User.PathEscape())
 		uriPath = strings.ReplaceAll(uriPath, c.XtreamPassword.PathEscape(), c.Password.PathEscape())
 	} else {
-		uriPath = path.Join("/", c.endpointAntiColision, c.User.PathEscape(), c.Password.PathEscape(), fmt.Sprintf("%d", trackIndex), path.Base(uriPath))
+		uriPath = path.Join("/", c.endpointAntiColision, c.User.PathEscape(), c.Password.PathEscape(), token, path.Base(uriPath))
 	}
 
 	basicAuth := oriURL.User.String()
+	if !xtream {
+		basicAuth = ""
+	}
 	if basicAuth != "" {
 		basicAuth += "@"
 	}
@@ -254,6 +284,13 @@ func (c *Config) replaceURL(uri string, trackIndex int, xtream bool) (string, er
 	}
 
 	return newURL.String(), nil
+}
+
+func (c *Config) router() *gin.Engine {
+	router := gin.New()
+	router.Use(requestLogger(), safeRecovery(), cors.Default())
+	c.routes(router.Group("/"))
+	return router
 }
 
 func advertisedAuthority(protocol, hostname string, port int) string {

@@ -19,13 +19,16 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/config"
@@ -53,7 +56,7 @@ var rootCmd = &cobra.Command{
 			var err error
 			remoteHostURL, err = url.Parse(m3uSources[0])
 			if err != nil {
-				log.Fatal(err)
+				log.Fatal("invalid m3u source URL")
 			}
 		}
 
@@ -78,7 +81,7 @@ var rootCmd = &cobra.Command{
 				xtreamUser = username
 				xtreamPassword = password
 				xtreamBaseURL = fmt.Sprintf("%s://%s", remoteHostURL.Scheme, remoteHostURL.Host)
-				log.Printf("[iptv-proxy] INFO: xtream service enabled with base URL %q (credentials sourced from m3u URL)", xtreamBaseURL)
+				log.Printf("[iptv-proxy] INFO: xtream service enabled (credentials sourced from m3u URL)")
 			}
 		}
 
@@ -95,8 +98,13 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal(err)
 		}
+		playlistConfig, err := resolvePlaylistConfig(m3uSources)
+		if err != nil {
+			log.Fatal(err)
+		}
 		conf := &config.ProxyConfig{
-			Relay: &relayConfig,
+			Playlist: &playlistConfig,
+			Relay:    &relayConfig,
 			HostConfig: &config.HostConfiguration{
 				Hostname: viper.GetString("hostname"),
 				Port:     viper.GetInt("port"),
@@ -123,7 +131,9 @@ var rootCmd = &cobra.Command{
 			conf.AdvertisedPort = conf.HostConfig.Port
 		}
 
-		server, err := server.NewServer(conf)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		server, err := server.NewServerContext(ctx, conf)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -135,7 +145,7 @@ var rootCmd = &cobra.Command{
 			return
 		}
 
-		if e := server.Serve(); e != nil {
+		if e := server.ServeContext(ctx); e != nil {
 			log.Fatal(e)
 		}
 	},
@@ -182,10 +192,44 @@ func init() {
 	rootCmd.Flags().Duration("relay-reconnect-initial", relayDefaults.ReconnectInitial, "Initial live upstream reconnect backoff")
 	rootCmd.Flags().Duration("relay-reconnect-max", relayDefaults.ReconnectMax, "Maximum live upstream reconnect backoff")
 	rootCmd.Flags().Duration("relay-read-timeout", relayDefaults.ReadTimeout, "Live upstream read inactivity timeout")
+	playlistDefaults := config.DefaultPlaylistConfig()
+	rootCmd.Flags().Duration("playlist-fetch-timeout", playlistDefaults.FetchTimeout, "Total timeout for one playlist source, including its body")
+	rootCmd.Flags().Duration("playlist-startup-timeout", 0, "Overall startup retry budget (0s makes one attempt per source)")
+	rootCmd.Flags().Duration("playlist-refresh-interval", 0, "Metadata refresh interval (0s disables the timer)")
+	rootCmd.Flags().String("playlist-state-dir", "", "Private last-good catalogue directory (empty disables persistence)")
+	rootCmd.Flags().Bool("playlist-stable-ids", false, "Use stable channel tokens; numeric links then return 410")
+	rootCmd.Flags().StringSlice("m3u-source-ids", nil, "Unique source IDs aligned with m3u-source (required for stable IDs)")
 
 	if e := viper.BindPFlags(rootCmd.Flags()); e != nil {
 		log.Fatal("error binding PFlags to viper")
 	}
+}
+
+func resolvePlaylistConfig(sources []string) (config.PlaylistConfig, error) {
+	c := config.DefaultPlaylistConfig()
+	for key, target := range map[string]*time.Duration{
+		"playlist-fetch-timeout":    &c.FetchTimeout,
+		"playlist-startup-timeout":  &c.StartupTimeout,
+		"playlist-refresh-interval": &c.RefreshInterval,
+	} {
+		value, err := time.ParseDuration(viper.GetString(key))
+		if err != nil {
+			return c, fmt.Errorf("invalid %s: expected a duration such as 30s", key)
+		}
+		*target = value
+	}
+	var err error
+	c.StableIDs, err = strconv.ParseBool(viper.GetString("playlist-stable-ids"))
+	if err != nil {
+		return c, fmt.Errorf("invalid playlist-stable-ids: expected true or false")
+	}
+	c.StateDir = viper.GetString("playlist-state-dir")
+	for _, value := range viper.GetStringSlice("m3u-source-ids") {
+		for _, id := range splitPipeSeparatedValue(value) {
+			c.SourceIDs = append(c.SourceIDs, strings.TrimSpace(id))
+		}
+	}
+	return c, c.Validate(sources)
 }
 
 func resolveRelayConfig() (config.RelayConfig, error) {

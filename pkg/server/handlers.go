@@ -56,6 +56,11 @@ func (c *Config) getM3U(ctx *gin.Context) {
 	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
 	ctx.Header("Content-Type", "application/octet-stream")
 
+	if c.catalogue != nil {
+		s := c.catalogue.snapshot()
+		ctx.Data(http.StatusOK, "application/octet-stream", s.rendered)
+		return
+	}
 	ctx.File(c.proxyfiedM3UPath)
 }
 
@@ -94,14 +99,12 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	if c.rejectUnsharedAccountStream(ctx, oriURL) {
 		return
 	}
-	utils.DebugLog("-> Incoming URL: %s", ctx.Request.URL)
-
-	connID := activeTracker.track(oriURL.Redacted(), ctx.ClientIP())
+	connID := activeTracker.track(oriURL.String(), ctx.ClientIP())
 	defer activeTracker.untrack(connID)
 
 	req, err := http.NewRequestWithContext(ctx.Request.Context(), "GET", oriURL.String(), nil)
 	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
+		ctx.AbortWithError(http.StatusInternalServerError, errors.New(safeErrorKind(err))) // nolint: errcheck
 		return
 	}
 
@@ -109,7 +112,7 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 
 	resp, err := streamingHTTPClient.Do(req)
 	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
+		ctx.AbortWithError(http.StatusInternalServerError, errors.New(safeErrorKind(err))) // nolint: errcheck
 		return
 	}
 	defer resp.Body.Close()
@@ -119,7 +122,7 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	ctx.Writer.Flush()
 	buf := make([]byte, streamingCopyBufSize)
 	if _, err := io.CopyBuffer(ctx.Writer, resp.Body, buf); err != nil {
-		utils.DebugLog("stream copy error for %s: %v", oriURL.Redacted(), err)
+		utils.DebugLog("stream copy failed identity=%s kind=%s", relayKey(oriURL.String(), nil), safeErrorKind(err))
 	}
 }
 
@@ -166,8 +169,6 @@ type authRequest struct {
 }
 
 func (c *Config) authenticate(ctx *gin.Context) {
-	utils.DebugLog("-> Incoming URL: %s", ctx.Request.URL) // Or use c.Request.URL.Path for exact request path
-
 	var authReq authRequest
 	if err := ctx.Bind(&authReq); err != nil {
 		ctx.AbortWithError(http.StatusBadRequest, err) // nolint: errcheck
@@ -180,8 +181,6 @@ func (c *Config) authenticate(ctx *gin.Context) {
 }
 
 func (c *Config) appAuthenticate(ctx *gin.Context) {
-	utils.DebugLog("-> Incoming URL: %s", ctx.Request.URL) // Or use c.Request.URL.Path for exact request path
-
 	contents, err := readLimitedRequestBody(ctx.Request.Body, maxFormBodyBytes)
 	if err != nil {
 		if errors.Is(err, errRequestBodyTooLarge) {

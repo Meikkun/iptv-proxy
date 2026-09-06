@@ -26,6 +26,10 @@ var upstreamHTTPClient = &http.Client{
 	Timeout: defaultUpstreamRequestTimeout,
 }
 
+// The caller's context bounds the complete metadata fetch, including body reads.
+// API, HLS and streaming clients retain their independent deadlines.
+var playlistHTTPClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
+
 // hlsNoRedirectHTTPClient is a shared client for HLS manifest fetches where
 // we need to capture 302 redirects instead of following them. It has a total
 // timeout because manifest fetches are expected to complete quickly.

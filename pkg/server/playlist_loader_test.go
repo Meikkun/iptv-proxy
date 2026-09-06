@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,10 +10,57 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jamesnetherton/m3u"
 	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/config"
 )
+
+func TestPlaylistFetchTimeoutIncludesBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("#EXTM3U\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	start := time.Now()
+	_, _, err := loadPlaylistSourceContext(context.Background(), upstream.URL, nil, 40*time.Millisecond)
+	if err == nil || time.Since(start) > time.Second {
+		t.Fatalf("body fetch was not bounded: %v (%s)", err, time.Since(start))
+	}
+}
+
+func TestParserFilteringValidatesExcludedRecords(t *testing.T) {
+	for _, input := range []string{
+		"", "#EXTM3U\n", "#EXTM3U\n#EXTINF:-1 group-title=\"Skip\",Bad\n",
+		"#EXTM3U\n#EXTINF:-1 group-title=\"Skip\",Bad\nhttp://a/%zz\n#EXTINF:-1 group-title=\"Keep\",Good\nhttp://a/good.ts\n",
+	} {
+		if _, _, err := parsePlaylistFiltered(strings.NewReader(input), []string{"Keep"}, nil); err == nil {
+			t.Fatalf("accepted unusable playlist %q", input)
+		}
+	}
+}
+
+func TestParserFilteringPreservesMatching(t *testing.T) {
+	input := "#EXTM3U\n"
+	for _, group := range []string{"ES|News", "Sports", "sports", "日本", "News|HD"} {
+		input += "#EXTINF:-1 group-title=\"" + group + "\",Name\nhttp://provider.example/a.ts\n"
+	}
+	all, err := parsePlaylist(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, groups := range [][]string{{"Sports"}, {"ES|*"}, {"日?"}, {"News|HD"}, {"sports"}, {"no-match"}} {
+		want, wantErr := filterPlaylistByGroups(all, groups)
+		got, discovered, err := parsePlaylistFiltered(strings.NewReader(input), groups, nil)
+		if (wantErr == nil) != (err == nil) || (err == nil && !reflect.DeepEqual(want.Tracks, got.Tracks)) {
+			t.Fatalf("filter %v: got %+v, %v; want %+v, %v", groups, got, err, want, wantErr)
+		}
+		if err == nil && !reflect.DeepEqual(discovered, playlistGroups(all)) {
+			t.Fatal("lost discovered groups")
+		}
+	}
+}
 
 func TestLoadPlaylistSourcesMergesTracksAndPreservesGroups(t *testing.T) {
 	playlist, err := loadPlaylistSources([]string{
@@ -233,8 +281,15 @@ func TestNewServerAppliesGroupFilteringAndRetainsAvailableGroups(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	if len(server.playlist.Tracks) != 2 {
-		t.Fatalf("NewServer() filtered track count = %d, want 2", len(server.playlist.Tracks))
+	output := httptest.NewRecorder()
+	ctx, _ := createTestContext(output)
+	server.getM3U(ctx)
+	selected, err := parsePlaylist(strings.NewReader(output.Body.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected.Tracks) != 2 {
+		t.Fatalf("NewServer() filtered track count = %d, want 2", len(selected.Tracks))
 	}
 
 	gotGroups := server.Groups()
@@ -243,7 +298,7 @@ func TestNewServerAppliesGroupFilteringAndRetainsAvailableGroups(t *testing.T) {
 		t.Fatalf("NewServer() groups = %v, want %v", gotGroups, wantGroups)
 	}
 
-	gotNames := []string{server.playlist.Tracks[0].Name, server.playlist.Tracks[1].Name}
+	gotNames := []string{selected.Tracks[0].Name, selected.Tracks[1].Name}
 	wantNames := []string{"Alpha Sports", "Beta Sports"}
 	if !reflect.DeepEqual(gotNames, wantNames) {
 		t.Fatalf("NewServer() filtered tracks = %v, want %v", gotNames, wantNames)

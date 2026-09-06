@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,10 @@ var activeTracker = &connectionTracker{
 
 // track registers a new active connection and returns its ID for later removal.
 func (t *connectionTracker) track(upstreamURL, clientIP string) string {
+	if len(upstreamURL) != 18 || !strings.HasPrefix(upstreamURL, "relay:") ||
+		strings.Trim(upstreamURL[6:], "0123456789abcdef") != "" {
+		upstreamURL = "direct:" + relayKey(upstreamURL, nil)[:12]
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.seq++
@@ -84,11 +89,16 @@ type statusResponse struct {
 	ActiveConnections int                `json:"active_connections"`
 	Connections       []ActiveConnection `json:"connections"`
 	Relay             *relayStats        `json:"relay,omitempty"`
+	Catalogue         *catalogueStatus   `json:"catalogue,omitempty"`
 }
 
 func (c *Config) status(ctx *gin.Context) {
 	conns := activeTracker.active()
 	response := statusResponse{ActiveConnections: len(conns), Connections: conns}
+	if c.catalogue != nil {
+		status := c.catalogue.status()
+		response.Catalogue = &status
+	}
 	if c.relay != nil {
 		stats := c.relay.stats()
 		response.Relay = &stats

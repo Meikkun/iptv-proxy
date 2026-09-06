@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -33,9 +34,16 @@ func TestUpstreamHTTPClientHasTotalTimeout(t *testing.T) {
 }
 
 func TestHLSNoRedirectHTTPClientBlocksRedirects(t *testing.T) {
-	testURL := "http://example.com/"
-	resp, err := hlsNoRedirectHTTPClient.Get(testURL)
-	if err == nil && resp != nil {
-		resp.Body.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/redirected", http.StatusFound)
+	}))
+	defer upstream.Close()
+	resp, err := hlsNoRedirectHTTPClient.Get(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("redirect followed: %d", resp.StatusCode)
 	}
 }

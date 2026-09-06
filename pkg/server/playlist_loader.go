@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jamesnetherton/m3u"
 )
@@ -41,53 +43,128 @@ func loadPlaylistSources(sources []string) (m3u.Playlist, error) {
 }
 
 func loadPlaylistSource(source string) (m3u.Playlist, error) {
-	reader, err := openPlaylistSource(source)
-	if err != nil {
-		return m3u.Playlist{}, err
-	}
-	defer reader.Close()
-
-	playlist, err := parsePlaylist(reader)
-	if err != nil {
-		return m3u.Playlist{}, fmt.Errorf("unable to parse playlist source %q: %w", source, err)
-	}
-
-	if err := normalizePlaylistTrackURIs(source, &playlist); err != nil {
-		return m3u.Playlist{}, err
-	}
-
-	return playlist, nil
+	p, _, err := loadPlaylistSourceContext(context.Background(), source, nil, defaultUpstreamRequestTimeout)
+	return p, err
 }
 
-func openPlaylistSource(source string) (io.ReadCloser, error) {
+func loadPlaylistSourceContext(ctx context.Context, source string, groups []string, timeout time.Duration) (m3u.Playlist, []string, error) {
+	result, err := loadPlaylistSourceDetails(ctx, source, groups, timeout)
+	if err == nil && len(result.Tracks) == 0 {
+		err = noMatchingGroups(groups, result.Groups)
+	}
+	return m3u.Playlist{Tracks: result.Tracks}, result.Groups, err
+}
+
+func loadPlaylistSourceDetails(ctx context.Context, source string, groups []string, timeout time.Duration) (catalogueSource, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	reader, err := openPlaylistSourceContext(ctx, source)
+	if err != nil {
+		if ctx.Err() != nil {
+			return catalogueSource{}, ctx.Err()
+		}
+		return catalogueSource{}, err
+	}
+	defer reader.Close()
+	var base *url.URL
 	if isRemotePlaylistSource(source) {
-		resp, err := upstreamHTTPClient.Get(source)
+		base, err = url.Parse(source)
 		if err != nil {
-			return nil, fmt.Errorf("unable to open playlist URL %q: %w", source, err)
+			return catalogueSource{}, fmt.Errorf("invalid playlist source URL")
+		}
+	}
+	accounts := make(map[string]struct{})
+	total := 0
+	p, discovered, err := parsePlaylistRecords(&playlistContextReader{ctx: ctx, reader: reader}, groups, base, func(track m3u.Track) {
+		total++
+		if account := relayAccountKey(track.URI); account != "" {
+			accounts[account] = struct{}{}
+		}
+	})
+	if ctx.Err() != nil {
+		return catalogueSource{}, ctx.Err()
+	}
+	if err != nil {
+		err = &playlistFailure{kind: "invalid_playlist", cause: err}
+	}
+	return catalogueSource{Tracks: p.Tracks, Groups: discovered, Accounts: sortUniqueKeys(accounts), TotalCount: total}, err
+}
+
+type playlistContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *playlistContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+func openPlaylistSourceContext(ctx context.Context, source string) (io.ReadCloser, error) {
+	if isRemotePlaylistSource(source) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+		if err != nil {
+			return nil, fmt.Errorf("invalid playlist source URL")
+		}
+		resp, err := playlistHTTPClient.Do(req)
+		if err != nil {
+			return nil, &playlistFailure{kind: safeErrorKind(err), cause: fmt.Errorf("playlist fetch failed")}
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return nil, fmt.Errorf("unable to open playlist URL %q: unexpected status %s", source, resp.Status)
+			return nil, &playlistFailure{kind: "http_status", cause: fmt.Errorf("playlist fetch returned HTTP %d", resp.StatusCode)}
 		}
 
 		return resp.Body, nil
 	}
 
+	info, err := os.Stat(source)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("playlist source must be a regular file")
+	}
 	file, err := os.Open(source)
 	if err != nil {
-		return nil, fmt.Errorf("unable to open playlist file %q: %w", source, err)
+		return nil, fmt.Errorf("unable to open playlist file")
+	}
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		file.Close()
+		return nil, fmt.Errorf("playlist source must be a regular file")
 	}
 
 	return file, nil
 }
 
 func parsePlaylist(reader io.Reader) (m3u.Playlist, error) {
+	p, _, err := parsePlaylistFiltered(reader, nil, nil)
+	return p, err
+}
+
+func parsePlaylistFiltered(reader io.Reader, includeGroups []string, base *url.URL) (m3u.Playlist, []string, error) {
+	p, groups, err := parsePlaylistRecords(reader, includeGroups, base, nil)
+	if err == nil && len(p.Tracks) == 0 {
+		return m3u.Playlist{}, nil, noMatchingGroups(includeGroups, groups)
+	}
+	return p, groups, err
+}
+
+func noMatchingGroups(patterns, groups []string) error {
+	return fmt.Errorf("no tracks matched the requested groups %q (available groups: %s)", strings.Join(normalizeGroups(patterns), ", "), strings.Join(groups, ", "))
+}
+
+func parsePlaylistRecords(reader io.Reader, includeGroups []string, base *url.URL, inspect func(m3u.Track)) (m3u.Playlist, []string, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	onFirstLine := true
 	playlist := m3u.Playlist{}
+	patterns := normalizeGroups(includeGroups)
+	groups := make(map[string]struct{})
+	var pending *m3u.Track
+	records := 0
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -96,44 +173,83 @@ func parsePlaylist(reader io.Reader) (m3u.Playlist, error) {
 			line = strings.TrimSpace(strings.TrimPrefix(line, "\uFEFF"))
 		}
 
-		if onFirstLine && !strings.HasPrefix(strings.TrimSpace(line), "#EXTM3U") {
-			return m3u.Playlist{}, fmt.Errorf("invalid m3u file format. Expected #EXTM3U file header")
+		if onFirstLine && line != "#EXTM3U" && !strings.HasPrefix(line, "#EXTM3U ") && !strings.HasPrefix(line, "#EXTM3U\t") {
+			return m3u.Playlist{}, nil, fmt.Errorf("invalid m3u file format. Expected #EXTM3U file header")
 		}
 
 		onFirstLine = false
 
 		switch {
 		case strings.HasPrefix(line, "#EXTINF"):
+			if pending != nil {
+				return m3u.Playlist{}, nil, fmt.Errorf("missing uri for track")
+			}
 			track, err := parseTrackMetadata(line)
 			if err != nil {
-				return m3u.Playlist{}, err
+				return m3u.Playlist{}, nil, err
 			}
-			playlist.Tracks = append(playlist.Tracks, track)
+			pending = &track
 		case strings.HasPrefix(line, "#") || line == "":
 			continue
-		case len(playlist.Tracks) == 0:
-			return m3u.Playlist{}, fmt.Errorf("URI provided for playlist with no tracks")
+		case pending == nil:
+			return m3u.Playlist{}, nil, fmt.Errorf("URI provided for playlist with no pending track")
 		default:
-			playlist.Tracks[len(playlist.Tracks)-1].URI = strings.TrimSpace(line)
+			uri, err := url.Parse(line)
+			if err != nil {
+				return m3u.Playlist{}, nil, fmt.Errorf("invalid track URI")
+			}
+			if base != nil {
+				uri = base.ResolveReference(uri)
+			}
+			pending.URI = uri.String()
+			if _, err := trackPathBase(pending.URI); err != nil {
+				return m3u.Playlist{}, nil, fmt.Errorf("invalid track URI path")
+			}
+			if inspect != nil {
+				inspect(*pending)
+			}
+			group := trackGroup(*pending)
+			if group != "" {
+				groups[group] = struct{}{}
+			}
+			if len(patterns) == 0 || groupMatchesAnyPattern(group, patterns) {
+				playlist.Tracks = append(playlist.Tracks, *pending)
+			}
+			records++
+			pending = nil
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return m3u.Playlist{}, err
+		return m3u.Playlist{}, nil, fmt.Errorf("playlist read failed (%s)", safeErrorKind(err))
 	}
-
-	for i, track := range playlist.Tracks {
-		if strings.TrimSpace(track.URI) == "" {
-			return m3u.Playlist{}, fmt.Errorf("missing uri for track %d (%q)", i, track.Name)
-		}
+	if pending != nil {
+		return m3u.Playlist{}, nil, fmt.Errorf("missing uri for track")
 	}
-
-	return playlist, nil
+	if onFirstLine || records == 0 {
+		return m3u.Playlist{}, nil, fmt.Errorf("empty or truncated playlist")
+	}
+	discovered := sortUniqueKeys(groups)
+	return playlist, discovered, nil
 }
 
 func parseTrackMetadata(line string) (m3u.Track, error) {
 	trimmedLine := strings.TrimPrefix(line, "#EXTINF:")
-	trackInfo := strings.Split(trimmedLine, ",")
+	// Commas inside quoted attributes are not the metadata/name delimiter.
+	quoted, comma := false, -1
+	for i, r := range trimmedLine {
+		if r == '"' {
+			quoted = !quoted
+		}
+		if r == ',' && !quoted {
+			comma = i
+			break
+		}
+	}
+	var trackInfo []string
+	if comma >= 0 {
+		trackInfo = []string{trimmedLine[:comma], trimmedLine[comma+1:]}
+	}
 	if len(trackInfo) < 2 {
 		return m3u.Track{}, fmt.Errorf("invalid m3u file format. Expected EXTINF metadata to contain track length and name data")
 	}
@@ -168,42 +284,6 @@ func parseTrackMetadata(line string) (m3u.Track, error) {
 	}
 
 	return track, nil
-}
-
-func normalizePlaylistTrackURIs(source string, playlist *m3u.Playlist) error {
-	if !isRemotePlaylistSource(source) {
-		return nil
-	}
-
-	baseURL, err := url.Parse(source)
-	if err != nil {
-		return fmt.Errorf("unable to parse playlist source url %q: %w", source, err)
-	}
-
-	for i := range playlist.Tracks {
-		resolvedURI, err := resolveTrackURI(baseURL, playlist.Tracks[i].URI)
-		if err != nil {
-			return fmt.Errorf("unable to resolve uri for track %q from %q: %w", playlist.Tracks[i].Name, source, err)
-		}
-
-		playlist.Tracks[i].URI = resolvedURI
-	}
-
-	return nil
-}
-
-func resolveTrackURI(baseURL *url.URL, rawURI string) (string, error) {
-	trimmedURI := strings.TrimSpace(rawURI)
-	trackURL, err := url.Parse(trimmedURI)
-	if err != nil {
-		return "", err
-	}
-
-	if trackURL.IsAbs() {
-		return trackURL.String(), nil
-	}
-
-	return baseURL.ResolveReference(trackURL).String(), nil
 }
 
 func filterPlaylistByGroups(playlist m3u.Playlist, includeGroups []string) (m3u.Playlist, error) {

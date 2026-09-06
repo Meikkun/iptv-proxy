@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jamesnetherton/m3u"
 )
 
 func (c *Config) routes(r *gin.RouterGroup) {
@@ -38,7 +39,7 @@ func (c *Config) routes(r *gin.RouterGroup) {
 	//Xtream service endopoints
 	if c.ProxyConfig.XtreamBaseURL != "" {
 		c.xtreamRoutes(r)
-		if c.RemoteURL != nil &&
+		if (c.catalogue == nil || !c.catalogue.config.StableIDs) && c.RemoteURL != nil &&
 			c.RemoteURL.Host != "" &&
 			strings.Contains(c.XtreamBaseURL, c.RemoteURL.Host) &&
 			c.XtreamUser.String() == c.RemoteURL.Query().Get("username") &&
@@ -84,13 +85,33 @@ func (c *Config) m3uRoutes(r *gin.RouterGroup) {
 }
 
 func (c *Config) m3uTrackProxy(ctx *gin.Context) {
-	trackIndex, err := strconv.Atoi(ctx.Param("track"))
-	if err != nil || trackIndex < 0 || trackIndex >= len(c.playlist.Tracks) {
-		ctx.AbortWithStatus(http.StatusNotFound)
-		return
+	token := ctx.Param("track")
+	playlist := c.playlist
+	var track *m3u.Track
+	if c.catalogue != nil {
+		s := c.catalogue.snapshot()
+		playlist = &s.playlist
+		if c.catalogue.config.StableIDs {
+			if providerIDPattern.MatchString(token) {
+				ctx.AbortWithStatus(http.StatusGone)
+				return
+			}
+			index, ok := s.lookup[token]
+			if !stableTokenPattern.MatchString(token) || !ok {
+				ctx.AbortWithStatus(http.StatusNotFound)
+				return
+			}
+			track = &s.playlist.Tracks[index]
+		}
 	}
-
-	track := &c.playlist.Tracks[trackIndex]
+	if track == nil {
+		trackIndex, err := strconv.Atoi(token)
+		if err != nil || trackIndex < 0 || trackIndex >= len(playlist.Tracks) {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		track = &playlist.Tracks[trackIndex]
+	}
 	trackConfig := &Config{
 		ProxyConfig:          c.ProxyConfig,
 		track:                track,
