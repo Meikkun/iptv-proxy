@@ -199,6 +199,47 @@ viewers. Relay connection entries and reconnect logs use a hashed session ID,
 not credential-bearing provider URLs. Existing direct-stream status behavior
 is unchanged.
 
+#### Protect a one-connection account: existing channel wins
+
+Set `RELAY_EXISTING_CHANNEL_WINS=true` (or `--relay-existing-channel-wins=true`)
+to protect a recognized Xtream account from competing live-channel requests.
+This mode is **off by default** and requires the relay to be enabled.
+
+If one viewer is watching A and another requests B on the same account, both
+receive **A**, using its existing upstream. No request for B reaches the provider.
+The first request reserves the account even during startup or reconnection, so
+simultaneous channel selections cannot open competing upstreams. As long as any
+viewer remains on A, further channel selections on that account also receive A.
+This includes the original viewer selecting another channel while their old
+connection is still open; the proxy does not infer device identity from IPs.
+
+After all viewers disconnect, requesting the same channel reuses the idle
+session. Requesting a different channel closes the idle upstream and waits for
+it to finish before opening the new one; it need not wait out the idle grace.
+The provider may still need time to release its slot. Disconnect all viewers
+before intentionally changing the shared channel.
+
+Accounts are identified by upstream origin (scheme, hostname and port) and
+decoded username/password in `/live/user/pass/channel`, legacy
+`/user/pass/channel`, and corresponding Xtream movie/series/timeshift paths.
+Different accounts and origins remain independent. Provider hostname aliases
+are not automatically grouped; custom/token-only URL layouts are not protected.
+Use consistent provider URLs for channels belonging to one account.
+
+Existing header/authentication isolation still applies: incompatible forwarded
+headers or URL user-info credentials receive HTTP 409 rather than sharing
+another authorization context or opening a competing connection. For recognized
+accounts, direct HLS, VOD, seeking/range and other non-relay requests also receive
+HTTP 409 in this mode, even while idle, so they cannot bypass account protection.
+Playlist/API downloads themselves are unaffected.
+
+The player may still label the selection **B** while displaying **A**. Substituted
+responses carry `X-IPTV-Relay-Substituted: true`; `/status` marks their connection
+with `substituted: true` and hashed `requested_url`, while `url` identifies the
+actually served relay. Aggregate relay status includes `existing_channel_wins`
+and `channel_substitutions`. These fields and substitution logs never include
+provider credentials or raw stream URLs.
+
 ### M3u8 Example
 
 The m3u8 feature is like m3u.

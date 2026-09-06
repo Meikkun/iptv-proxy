@@ -67,10 +67,15 @@ func (c *Config) relayStream(ctx *gin.Context, upstream *url.URL) {
 		if startupCtx.Err() == context.DeadlineExceeded && ctx.Request.Context().Err() == nil {
 			status = http.StatusGatewayTimeout
 		}
-		ctx.AbortWithStatus(status)
+		if status == http.StatusConflict {
+			ctx.AbortWithStatusJSON(status, gin.H{"error": "account is occupied by a stream with incompatible request credentials or headers"})
+		} else {
+			ctx.AbortWithStatus(status)
+		}
 		return
 	}
 	defer sub.release()
+	activeTracker.selectRelay(connID, "relay:"+key[:12], "relay:"+sub.session.key[:12])
 
 	// A late join during reconnection also has a bounded first-byte wait.
 	var chunk []byte
@@ -109,6 +114,9 @@ func (c *Config) relayStream(ctx *gin.Context, upstream *url.URL) {
 	}
 
 	mergeHttpHeader(ctx.Writer.Header(), sub.session.header)
+	if key != sub.session.key {
+		ctx.Header("X-IPTV-Relay-Substituted", "true")
+	}
 	ctx.Status(http.StatusOK)
 	for {
 		select {

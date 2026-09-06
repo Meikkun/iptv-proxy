@@ -91,6 +91,9 @@ func (c *Config) m3u8ReverseProxy(ctx *gin.Context) {
 }
 
 func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
+	if c.rejectUnsharedAccountStream(ctx, oriURL) {
+		return
+	}
 	utils.DebugLog("-> Incoming URL: %s", ctx.Request.URL)
 
 	connID := activeTracker.track(oriURL.Redacted(), ctx.ClientIP())

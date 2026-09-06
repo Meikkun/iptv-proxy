@@ -28,7 +28,7 @@ func bindRelayTestConfig(t *testing.T) {
 
 func TestRelayConfigDefaultsAndEnvironment(t *testing.T) {
 	bindRelayTestConfig(t)
-	for _, name := range []string{"RELAY_ENABLED", "RELAY_IDLE_TIMEOUT", "RELAY_RECONNECT_INITIAL", "RELAY_RECONNECT_MAX", "RELAY_READ_TIMEOUT"} {
+	for _, name := range []string{"RELAY_ENABLED", "RELAY_EXISTING_CHANNEL_WINS", "RELAY_IDLE_TIMEOUT", "RELAY_RECONNECT_INITIAL", "RELAY_RECONNECT_MAX", "RELAY_READ_TIMEOUT"} {
 		t.Setenv(name, "")
 	}
 	got, err := resolveRelayConfig()
@@ -71,6 +71,7 @@ func TestRelayConfigFlagsOverrideEnvironment(t *testing.T) {
 func TestRelayConfigRejectsInvalidValues(t *testing.T) {
 	for _, tc := range []struct{ key, value string }{
 		{"relay-enabled", "perhaps"},
+		{"relay-existing-channel-wins", "perhaps"},
 		{"relay-idle-timeout", "tomorrow"},
 		{"relay-idle-timeout", "-1s"},
 		{"relay-reconnect-initial", "0s"},
@@ -87,5 +88,33 @@ func TestRelayConfigRejectsInvalidValues(t *testing.T) {
 				t.Fatal("invalid configuration accepted")
 			}
 		})
+	}
+}
+
+func TestRelayExistingChannelWinsConfig(t *testing.T) {
+	bindRelayTestConfig(t)
+	t.Setenv("RELAY_ENABLED", "true")
+	t.Setenv("RELAY_EXISTING_CHANNEL_WINS", "true")
+	got, err := resolveRelayConfig()
+	if err != nil || !got.ExistingChannelWins {
+		t.Fatalf("account protection environment = %+v, %v", got, err)
+	}
+	t.Setenv("RELAY_ENABLED", "false")
+	if _, err := resolveRelayConfig(); err == nil {
+		t.Fatal("account protection allowed while relay disabled")
+	}
+	t.Setenv("RELAY_ENABLED", "true")
+	flag := rootCmd.Flags().Lookup("relay-existing-channel-wins")
+	oldValue, oldChanged := flag.Value.String(), flag.Changed
+	t.Cleanup(func() {
+		flag.Value.Set(oldValue)
+		flag.Changed = oldChanged
+	})
+	if err := rootCmd.Flags().Set("relay-existing-channel-wins", "false"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = resolveRelayConfig()
+	if err != nil || got.ExistingChannelWins {
+		t.Fatalf("account protection flag did not override environment: %+v, %v", got, err)
 	}
 }

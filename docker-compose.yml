@@ -33,6 +33,9 @@ services:
       GIN_MODE: release
       # Shared live TS upstreams; no replay/cache or deliberate delay.
       RELAY_ENABLED: "true"
+      # Optional one-connection account protection: requests for B receive
+      # occupied channel A. Recognized non-relay account streams are refused.
+      RELAY_EXISTING_CHANNEL_WINS: "false"
       # Holds the provider slot between viewers. Use "0s" for immediate stop;
       # switching different channels can still contend on one-slot accounts.
       RELAY_IDLE_TIMEOUT: "30s"
