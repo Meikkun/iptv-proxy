@@ -33,7 +33,7 @@ func (c *Config) routes(r *gin.RouterGroup) {
 	r = r.Group(c.CustomEndpoint)
 
 	// Status endpoint — no auth required
-	r.GET("/status", handleStatus)
+	r.GET("/status", c.status)
 
 	//Xtream service endopoints
 	if c.ProxyConfig.XtreamBaseURL != "" {
@@ -95,6 +95,7 @@ func (c *Config) m3uTrackProxy(ctx *gin.Context) {
 		ProxyConfig:          c.ProxyConfig,
 		track:                track,
 		endpointAntiColision: c.endpointAntiColision,
+		relay:                c.relay,
 	}
 
 	requestID := strings.TrimPrefix(ctx.Param("id"), "/")

@@ -478,7 +478,7 @@ func (c *Config) xtreamStreamHandler(ctx *gin.Context) {
 		return
 	}
 
-	c.xtreamStream(ctx, rpURL)
+	c.liveStream(ctx, rpURL, true)
 }
 
 func (c *Config) xtreamStreamLive(ctx *gin.Context) {
@@ -489,7 +489,7 @@ func (c *Config) xtreamStreamLive(ctx *gin.Context) {
 		return
 	}
 
-	c.xtreamStream(ctx, rpURL)
+	c.liveStream(ctx, rpURL, true)
 }
 
 func (c *Config) xtreamStreamPlay(ctx *gin.Context) {

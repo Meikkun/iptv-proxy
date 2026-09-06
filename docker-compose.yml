@@ -31,6 +31,15 @@ services:
       # Hostname or IP to expose the IPTVs endpoints (for machine not for docker)
       HOSTNAME: localhost
       GIN_MODE: release
+      # Shared live TS upstreams; no replay/cache or deliberate delay.
+      RELAY_ENABLED: "true"
+      # Holds the provider slot between viewers. Use "0s" for immediate stop;
+      # switching different channels can still contend on one-slot accounts.
+      RELAY_IDLE_TIMEOUT: "30s"
+      RELAY_RECONNECT_INITIAL: "1s"
+      RELAY_RECONNECT_MAX: "10s"
+      # Read inactivity, not maximum stream duration.
+      RELAY_READ_TIMEOUT: "15s"
       # Optional group-title/category filter for the merged output
       # INCLUDE_GROUP: "Sports|News"
       # INCLUDE_GROUP: "Sports*|News*"
