@@ -24,7 +24,9 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pierre-emmanuelJ/iptv-proxy/pkg/config"
 
@@ -89,7 +91,12 @@ var rootCmd = &cobra.Command{
 
 		includeGroups := getStringSliceSetting("include-group")
 
+		relayConfig, err := resolveRelayConfig()
+		if err != nil {
+			log.Fatal(err)
+		}
 		conf := &config.ProxyConfig{
+			Relay: &relayConfig,
 			HostConfig: &config.HostConfiguration{
 				Hostname: viper.GetString("hostname"),
 				Port:     viper.GetInt("port"),
@@ -168,10 +175,38 @@ func init() {
 	rootCmd.Flags().String("xtream-base-url", "", "Xtream-code base url e.g(http://expample.tv:8080)")
 	rootCmd.Flags().Int("m3u-cache-expiration", 1, "M3U cache expiration in hour")
 	rootCmd.Flags().BoolP("xtream-api-get", "", false, "Generate get.php from xtream API instead of get.php original endpoint")
+	relayDefaults := config.DefaultRelayConfig()
+	rootCmd.Flags().Bool("relay-enabled", relayDefaults.Enabled, "Share continuous live TS upstreams between viewers")
+	rootCmd.Flags().Duration("relay-idle-timeout", relayDefaults.IdleTimeout, "Keep an unused live upstream open (0s stops immediately)")
+	rootCmd.Flags().Duration("relay-reconnect-initial", relayDefaults.ReconnectInitial, "Initial live upstream reconnect backoff")
+	rootCmd.Flags().Duration("relay-reconnect-max", relayDefaults.ReconnectMax, "Maximum live upstream reconnect backoff")
+	rootCmd.Flags().Duration("relay-read-timeout", relayDefaults.ReadTimeout, "Live upstream read inactivity timeout")
 
 	if e := viper.BindPFlags(rootCmd.Flags()); e != nil {
 		log.Fatal("error binding PFlags to viper")
 	}
+}
+
+func resolveRelayConfig() (config.RelayConfig, error) {
+	c := config.DefaultRelayConfig()
+	enabled, err := strconv.ParseBool(viper.GetString("relay-enabled"))
+	if err != nil {
+		return c, fmt.Errorf("invalid relay-enabled: expected true or false")
+	}
+	c.Enabled = enabled
+	for key, target := range map[string]*time.Duration{
+		"relay-idle-timeout":      &c.IdleTimeout,
+		"relay-reconnect-initial": &c.ReconnectInitial,
+		"relay-reconnect-max":     &c.ReconnectMax,
+		"relay-read-timeout":      &c.ReadTimeout,
+	} {
+		value, err := time.ParseDuration(viper.GetString(key))
+		if err != nil {
+			return c, fmt.Errorf("invalid %s: expected a duration such as 15s", key)
+		}
+		*target = value
+	}
+	return c, c.Validate()
 }
 
 // initConfig reads in config file and ENV variables if set.

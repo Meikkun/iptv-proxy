@@ -126,6 +126,79 @@ INCLUDE_GROUP='ES\|*|\|ES\|*'
 iptv-proxy --include-group 'ES\|*' --include-group '\|ES\|*'
 ```
 
+### Shared live relay (enabled by default)
+
+Multiple viewers of the **same live MPEG-TS source** share one upstream
+connection. This covers M3U tracks with a `.ts` URL path and non-positive
+`EXTINF` duration, plus Xtream `/live/user/password/id` and legacy
+`/user/password/id` live endpoints (`.ts` or extensionless). Query tokens are
+preserved. HLS playlists/segments, movies, series, timeshift, positive-duration
+M3U tracks and other formats keep their existing direct behavior.
+
+**There is no playback cache, replay, disk recording or deliberate delay.**
+New viewers join the live edge. Each viewer has only a bounded transport queue
+(256 chunks of at most 6,016 bytes, about 1.47 MiB) to absorb provider bursts
+and short scheduling delays. A viewer that cannot keep up
+is disconnected rather than silently losing bytes or blocking other viewers.
+Native HTTP/1 downstream writes have a five-second deadline. A small TS
+packet-boundary aligner discards an incomplete prefix; it does not retain
+PAT/PMT, parse codecs or wait for keyframes. Players may therefore wait for the
+provider's next stream tables/keyframe before showing a picture.
+
+After the last viewer leaves, the upstream remains open for **30 seconds**.
+Rejoining the same source during that grace period reuses it without replaying
+bytes received while idle. Set the idle timeout to `0s` to stop immediately.
+**Grace holds a provider connection slot:** switching to a *different* channel
+on a one-slot account can still contend with the old channel. Sharing is not
+cross-provider balancing or alternate-channel fallback. Providers can also take
+additional time to release a slot after the proxy closes its connection.
+
+EOF, network failures and read stalls reconnect to the **same source** with
+exponential backoff, closing the previous upstream first. Read timeout means
+inactivity, not maximum viewing time. Without playback buffering, short freezes
+or player resynchronization during reconnect are unavoidable. Startup waits at
+most 20 seconds for valid TS packets and then returns an HTTP error (including
+a new viewer joining during a stalled reconnect); permanent
+4xx responses (including 401/403/404, excluding transient 408/429) stop retries.
+Cancelling one viewer does not cancel other viewers. Idle expiry and server
+shutdown cancel upstream reads and reconnect waits.
+
+| CLI flag | Environment variable | Default |
+| --- | --- | --- |
+| `--relay-enabled` | `RELAY_ENABLED` | `true` |
+| `--relay-idle-timeout` | `RELAY_IDLE_TIMEOUT` | `30s` |
+| `--relay-reconnect-initial` | `RELAY_RECONNECT_INITIAL` | `1s` |
+| `--relay-reconnect-max` | `RELAY_RECONNECT_MAX` | `10s` |
+| `--relay-read-timeout` | `RELAY_READ_TIMEOUT` | `15s` |
+
+Durations require units (for example `250ms`, `15s`, `1m`). Invalid or negative
+durations are rejected; reconnect/read durations must be positive and maximum
+backoff must be at least the initial backoff. Use `RELAY_ENABLED=false` (or
+`--relay-enabled=false`) to restore one direct upstream per viewer.
+
+Sessions are keyed by the **exact upstream URL**, including query credentials,
+and forwarded request headers. Authorization, cookies, Referer and Origin
+differences **isolate sessions**, as do other custom forwarded headers. Only
+User-Agent and Accept differences are ignored for sharing: the first viewer's
+values are used for that session and its reconnects. Per-viewer forwarding
+metadata (`Forwarded`, `X-Forwarded-For`, `X-Real-IP`) is not sent upstream.
+This conservative isolation can create multiple sessions when players supply
+different provider-sensitive headers.
+
+An absent Range or exactly `Range: bytes=0-` can share; other byte ranges stay
+direct. Shared requests omit range/conditional validators and request identity
+encoding. Responses keep Content-Type but remove finite-response length/range
+metadata, validators and Set-Cookie, and use `Cache-Control: no-store`.
+The built-in server serves HTTP/1; when embedding a handler on HTTP/2, requests
+remain direct so connection-wide deadlines cannot interrupt unrelated streams.
+
+`/status` retains `active_connections` and `connections` as **viewer** counts
+and adds aggregate `relay` counts (`sessions`, `viewers`, `upstreams`,
+`reconnects`, `slow_disconnects`). Idle sessions can have an upstream but no
+viewers. Relay connection entries and reconnect logs use a hashed session ID,
+not credential-bearing provider URLs. Existing direct-stream status behavior
+is unchanged.
+
 ### M3u8 Example
 
 The m3u8 feature is like m3u.

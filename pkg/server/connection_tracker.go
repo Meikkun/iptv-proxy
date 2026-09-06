@@ -66,13 +66,20 @@ func (t *connectionTracker) active() []ActiveConnection {
 type statusResponse struct {
 	ActiveConnections int                `json:"active_connections"`
 	Connections       []ActiveConnection `json:"connections"`
+	Relay             *relayStats        `json:"relay,omitempty"`
+}
+
+func (c *Config) status(ctx *gin.Context) {
+	conns := activeTracker.active()
+	response := statusResponse{ActiveConnections: len(conns), Connections: conns}
+	if c.relay != nil {
+		stats := c.relay.stats()
+		response.Relay = &stats
+	}
+	ctx.JSON(http.StatusOK, response)
 }
 
 // handleStatus returns the current active streaming connections as JSON.
 func handleStatus(ctx *gin.Context) {
-	conns := activeTracker.active()
-	ctx.JSON(http.StatusOK, statusResponse{
-		ActiveConnections: len(conns),
-		Connections:       conns,
-	})
+	(&Config{}).status(ctx)
 }

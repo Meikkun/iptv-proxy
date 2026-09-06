@@ -66,6 +66,10 @@ func (c *Config) reverseProxy(ctx *gin.Context) {
 		return
 	}
 
+	if c.track.Length <= 0 && c.relay != nil && relayEligible(ctx.Request, rpURL, false) {
+		c.relayStream(ctx, rpURL)
+		return
+	}
 	c.stream(ctx, rpURL)
 }
 

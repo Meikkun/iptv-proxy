@@ -59,10 +59,15 @@ type Config struct {
 	proxyfiedM3UPath string
 
 	endpointAntiColision string
+	relay                *relayManager
 }
 
 // NewServer initialize a new server configuration
 func NewServer(config *config.ProxyConfig) (*Config, error) {
+	relayConfig := relayConfiguration(config)
+	if err := relayConfig.Validate(); err != nil {
+		return nil, err
+	}
 	p, err := loadPlaylistSources(config.M3USources)
 	if err != nil {
 		return nil, err
@@ -81,18 +86,25 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 		endpointAntiColision = trimmedCustomId
 	}
 
-	return &Config{
+	server := &Config{
 		ProxyConfig:          config,
 		playlist:             &p,
 		availableGroups:      availableGroups,
 		track:                nil,
 		proxyfiedM3UPath:     proxyfiedM3UPath,
 		endpointAntiColision: endpointAntiColision,
-	}, nil
+	}
+	if relayConfig.Enabled {
+		server.relay = newRelayManager(relayConfig, streamingHTTPClient)
+	}
+	return server, nil
 }
 
 // Serve the iptv-proxy api
 func (c *Config) Serve() error {
+	if c.relay != nil {
+		defer c.relay.Close()
+	}
 	if err := c.playlistInitialization(); err != nil {
 		return err
 	}
@@ -103,8 +115,9 @@ func (c *Config) Serve() error {
 	c.routes(group)
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", c.HostConfig.Port),
-		Handler: router,
+		Addr:        fmt.Sprintf(":%d", c.HostConfig.Port),
+		Handler:     router,
+		ConnContext: relayConnContext,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -124,6 +137,9 @@ func (c *Config) Serve() error {
 		return err
 	case <-ctx.Done():
 		stop()
+		if c.relay != nil {
+			c.relay.Close()
+		}
 		log.Printf("[iptv-proxy] Shutting down gracefully (timeout %s)...", shutdownTimeout)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
