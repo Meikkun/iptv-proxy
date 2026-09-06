@@ -7,11 +7,12 @@ import (
 
 // RelayConfig controls continuous live TS delivery, not playback caching.
 type RelayConfig struct {
-	Enabled          bool
-	IdleTimeout      time.Duration
-	ReconnectInitial time.Duration
-	ReconnectMax     time.Duration
-	ReadTimeout      time.Duration
+	Enabled             bool
+	ExistingChannelWins bool
+	IdleTimeout         time.Duration
+	ReconnectInitial    time.Duration
+	ReconnectMax        time.Duration
+	ReadTimeout         time.Duration
 }
 
 func DefaultRelayConfig() RelayConfig {
@@ -25,6 +26,9 @@ func DefaultRelayConfig() RelayConfig {
 }
 
 func (c RelayConfig) Validate() error {
+	if c.ExistingChannelWins && !c.Enabled {
+		return fmt.Errorf("relay-existing-channel-wins requires relay-enabled")
+	}
 	if c.IdleTimeout < 0 {
 		return fmt.Errorf("relay-idle-timeout must not be negative")
 	}

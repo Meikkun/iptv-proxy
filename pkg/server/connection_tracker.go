@@ -11,10 +11,12 @@ import (
 
 // ActiveConnection represents a single active streaming connection.
 type ActiveConnection struct {
-	ID        string `json:"id"`
-	URL       string `json:"url"`
-	ClientIP  string `json:"client_ip"`
-	StartedAt string `json:"started_at"`
+	ID           string `json:"id"`
+	URL          string `json:"url"`
+	ClientIP     string `json:"client_ip"`
+	StartedAt    string `json:"started_at"`
+	RequestedURL string `json:"requested_url,omitempty"`
+	Substituted  bool   `json:"substituted,omitempty"`
 }
 
 // connectionTracker tracks active streaming connections.
@@ -49,6 +51,21 @@ func (t *connectionTracker) untrack(id string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.conns, id)
+}
+
+func (t *connectionTracker) selectRelay(id, requested, served string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	conn, ok := t.conns[id]
+	if !ok {
+		return
+	}
+	conn.URL = served
+	conn.Substituted = requested != served
+	if conn.Substituted {
+		conn.RequestedURL = requested
+	}
+	t.conns[id] = conn
 }
 
 // active returns a snapshot of all active connections.

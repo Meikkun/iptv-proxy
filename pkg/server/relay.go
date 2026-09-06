@@ -25,25 +25,29 @@ const (
 // relayManager owns session lifetime. Its mutex serializes joins, idle expiry,
 // and removal; an entry stays published until its upstream has fully closed.
 type relayManager struct {
-	mu          sync.Mutex
-	sessions    map[string]*relaySession
-	closed      bool
-	client      *http.Client
-	config      config.RelayConfig
-	startup     time.Duration
-	reconnects  uint64
-	slowViewers uint64
+	mu            sync.Mutex
+	sessions      map[string]*relaySession
+	accounts      map[string]*relaySession
+	closed        bool
+	client        *http.Client
+	config        config.RelayConfig
+	startup       time.Duration
+	reconnects    uint64
+	slowViewers   uint64
+	substitutions uint64
 }
 
 type relaySession struct {
-	manager *relayManager
-	key     string
-	url     string
-	request http.Header
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	ready   chan struct{}
+	manager         *relayManager
+	key             string
+	account         string
+	requestIdentity string
+	url             string
+	request         http.Header
+	ctx             context.Context
+	cancel          context.CancelFunc
+	done            chan struct{}
+	ready           chan struct{}
 
 	// Protected by manager.mu.
 	viewers  map[*relaySubscription]struct{}
@@ -65,6 +69,7 @@ type relaySubscription struct {
 func newRelayManager(cfg config.RelayConfig, client *http.Client) *relayManager {
 	return &relayManager{
 		sessions: make(map[string]*relaySession),
+		accounts: make(map[string]*relaySession),
 		client:   client, config: cfg, startup: relayStartupBudget,
 	}
 }
@@ -74,6 +79,11 @@ func newRelayManager(cfg config.RelayConfig, client *http.Client) *relayManager 
 func (m *relayManager) subscribe(ctx context.Context, rawURL string, headers http.Header) (*relaySubscription, int) {
 	headers = relayRequestHeaders(headers)
 	key := relayKey(rawURL, headers)
+	account := ""
+	if m.config.ExistingChannelWins {
+		account = relayAccountKey(rawURL)
+	}
+	requestIdentity := relayRequestIdentity(rawURL, headers)
 	for {
 		m.mu.Lock()
 		if m.closed || ctx.Err() != nil {
@@ -81,6 +91,18 @@ func (m *relayManager) subscribe(ctx context.Context, rawURL string, headers htt
 			return nil, http.StatusServiceUnavailable
 		}
 		s := m.sessions[key]
+		if account != "" {
+			s = m.accounts[account]
+			if s != nil && !s.stopping {
+				if len(s.viewers) == 0 && s.key != key {
+					// Release the idle provider slot before changing channels.
+					s.stopLocked()
+				} else if s.requestIdentity != requestIdentity {
+					m.mu.Unlock()
+					return nil, http.StatusConflict
+				}
+			}
+		}
 		if s != nil && s.stopping {
 			m.mu.Unlock()
 			select {
@@ -94,11 +116,15 @@ func (m *relayManager) subscribe(ctx context.Context, rawURL string, headers htt
 			sessionCtx, cancel := context.WithCancel(context.Background())
 			s = &relaySession{
 				manager: m, key: key, url: rawURL, request: headers,
+				account: account, requestIdentity: requestIdentity,
 				ctx: sessionCtx, cancel: cancel, done: make(chan struct{}),
 				ready: make(chan struct{}), viewers: make(map[*relaySubscription]struct{}),
 				status: http.StatusBadGateway,
 			}
 			m.sessions[key] = s
+			if account != "" {
+				m.accounts[account] = s
+			}
 			go s.run()
 		}
 		s.idleSeq++
@@ -108,6 +134,10 @@ func (m *relayManager) subscribe(ctx context.Context, rawURL string, headers htt
 		}
 		sub := &relaySubscription{s, make(chan []byte, relayQueueSize), make(chan struct{})}
 		s.viewers[sub] = struct{}{}
+		if s.key != key {
+			m.substitutions++
+			log.Printf("[iptv-proxy] relay account %.12s serving session %.12s instead of requested %.12s", account, s.key, key)
+		}
 		m.mu.Unlock()
 
 		select {
@@ -191,17 +221,22 @@ func (m *relayManager) Close() {
 }
 
 type relayStats struct {
-	Sessions        int    `json:"sessions"`
-	Viewers         int    `json:"viewers"`
-	Upstreams       int    `json:"upstreams"`
-	Reconnects      uint64 `json:"reconnects"`
-	SlowDisconnects uint64 `json:"slow_disconnects"`
+	Sessions            int    `json:"sessions"`
+	Viewers             int    `json:"viewers"`
+	Upstreams           int    `json:"upstreams"`
+	Reconnects          uint64 `json:"reconnects"`
+	SlowDisconnects     uint64 `json:"slow_disconnects"`
+	ExistingChannelWins bool   `json:"existing_channel_wins"`
+	Substitutions       uint64 `json:"channel_substitutions"`
 }
 
 func (m *relayManager) stats() relayStats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	stats := relayStats{Sessions: len(m.sessions), Reconnects: m.reconnects, SlowDisconnects: m.slowViewers}
+	stats := relayStats{
+		Sessions: len(m.sessions), Reconnects: m.reconnects, SlowDisconnects: m.slowViewers,
+		ExistingChannelWins: m.config.ExistingChannelWins, Substitutions: m.substitutions,
+	}
 	for _, s := range m.sessions {
 		stats.Viewers += len(s.viewers)
 		if s.upstream {
@@ -226,6 +261,9 @@ func (s *relaySession) run() {
 		m.mu.Lock()
 		s.stopLocked()
 		delete(m.sessions, s.key)
+		if m.accounts[s.account] == s {
+			delete(m.accounts, s.account)
+		}
 		close(s.done)
 		m.mu.Unlock()
 	}()

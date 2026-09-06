@@ -78,16 +78,16 @@ var rootCmd = &cobra.Command{
 				xtreamUser = username
 				xtreamPassword = password
 				xtreamBaseURL = fmt.Sprintf("%s://%s", remoteHostURL.Scheme, remoteHostURL.Host)
-			log.Printf("[iptv-proxy] INFO: xtream service enabled with base URL %q (credentials sourced from m3u URL)", xtreamBaseURL)
+				log.Printf("[iptv-proxy] INFO: xtream service enabled with base URL %q (credentials sourced from m3u URL)", xtreamBaseURL)
+			}
 		}
-	}
 
 		config.DebugLoggingEnabled = viper.GetBool("debug-logging")
 		config.CacheFolder = viper.GetString("cache-folder")
-	// Ensure CacheFolder ends with a '/'
-	if config.CacheFolder != "" && !strings.HasSuffix(config.CacheFolder, "/") {
-		config.CacheFolder += "/"
-	}
+		// Ensure CacheFolder ends with a '/'
+		if config.CacheFolder != "" && !strings.HasSuffix(config.CacheFolder, "/") {
+			config.CacheFolder += "/"
+		}
 
 		includeGroups := getStringSliceSetting("include-group")
 
@@ -177,6 +177,7 @@ func init() {
 	rootCmd.Flags().BoolP("xtream-api-get", "", false, "Generate get.php from xtream API instead of get.php original endpoint")
 	relayDefaults := config.DefaultRelayConfig()
 	rootCmd.Flags().Bool("relay-enabled", relayDefaults.Enabled, "Share continuous live TS upstreams between viewers")
+	rootCmd.Flags().Bool("relay-existing-channel-wins", relayDefaults.ExistingChannelWins, "Serve the occupied Xtream account's live channel instead of opening a conflicting channel")
 	rootCmd.Flags().Duration("relay-idle-timeout", relayDefaults.IdleTimeout, "Keep an unused live upstream open (0s stops immediately)")
 	rootCmd.Flags().Duration("relay-reconnect-initial", relayDefaults.ReconnectInitial, "Initial live upstream reconnect backoff")
 	rootCmd.Flags().Duration("relay-reconnect-max", relayDefaults.ReconnectMax, "Maximum live upstream reconnect backoff")
@@ -189,11 +190,16 @@ func init() {
 
 func resolveRelayConfig() (config.RelayConfig, error) {
 	c := config.DefaultRelayConfig()
-	enabled, err := strconv.ParseBool(viper.GetString("relay-enabled"))
-	if err != nil {
-		return c, fmt.Errorf("invalid relay-enabled: expected true or false")
+	for key, target := range map[string]*bool{
+		"relay-enabled":               &c.Enabled,
+		"relay-existing-channel-wins": &c.ExistingChannelWins,
+	} {
+		value, err := strconv.ParseBool(viper.GetString(key))
+		if err != nil {
+			return c, fmt.Errorf("invalid %s: expected true or false", key)
+		}
+		*target = value
 	}
-	c.Enabled = enabled
 	for key, target := range map[string]*time.Duration{
 		"relay-idle-timeout":      &c.IdleTimeout,
 		"relay-reconnect-initial": &c.ReconnectInitial,

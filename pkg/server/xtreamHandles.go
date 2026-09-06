@@ -621,6 +621,9 @@ func getHlsRedirectURL(c *Config, channel string) (*url.URL, error) {
 }
 
 func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
+	if c.rejectUnsharedAccountStream(ctx, oriURL) {
+		return
+	}
 	connID := activeTracker.track(oriURL.Redacted(), ctx.ClientIP())
 	defer activeTracker.untrack(connID)
 
